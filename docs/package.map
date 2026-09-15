@@ -1,0 +1,118 @@
+# THE PACKAGE -- what we hand people, and the ONLY thing the User Manual may name.
+#
+# A user gets a zip: the `swtpcsim` binary, `swtpcsim-manual.pdf`, `DRIVING-WITH-AI.md`, and
+# the examples/ tree -- each example a self-contained folder holding a machine file and the
+# media it mounts. The DIR table below is the list of them, and this sentence deliberately
+# does not repeat it: naming them twice in one file is how the previous wording ("some disks
+# and tapes") outlived the layout it described.
+#
+# They do NOT get this repository -- no src/, no CMakeLists, no tests, no DESIGN.md, no
+# docs/boards/. So the manual may not reference any of it, and every path it prints must be
+# a path that exists INSIDE THE ZIP.
+#
+# TWO documents ship, not one. The manual (a PDF) is for the human. DRIVING-WITH-AI.md is for
+# an AI assistant driving the machine over MCP -- it is dropped, verbatim, into a working
+# directory so a user can start an assistant there and say "Using swtpcsim, do ...". It is a
+# FILE below (token-expanded on the way in, exactly like the manual), NOT a chapter of the manual.
+#
+# This file is how that is enforced rather than merely intended. It is the single source
+# of truth for three things that would otherwise drift apart:
+#
+#   1. TOKENS. The manual's Markdown writes {{MACHINE_CPM}}, never a literal path. The doc
+#      build substitutes from here and FAILS on any token it cannot resolve, so a path
+#      cannot reach the PDF unexpanded and a path cannot be invented in prose.
+#   2. CONTENTS. tools/build-package.sh assembles the zip from the DIRS and FILES below.
+#   3. THE TESTS, and read what they actually do rather than what you would like them to.
+#      tests/acceptance/docs-manual.cmake greps the chapters for anything pointing outside
+#      the package (src/, ctest, a bare header) and checks every chapter is in ORDER.
+#      tests/acceptance/docs-package.cmake reads THIS file and docs/manual/package.md and
+#      fails unless they name the same set -- every FILE/DIR here appears in the manual, and
+#      nothing in the manual's manifest is missing here. tests/acceptance/examples.cmake
+#      copies the examples to a scratch directory with no repository in sight and boots them.
+#
+#      WHAT NOTHING DOES is assemble this package and run the manual's own commands against
+#      it. docs-package.cmake compares the two manifests as TEXT -- the cheap half -- but
+#      tools/build-package.sh is run by no workflow and no test, only by hand, so nobody types
+#      the manual's commands at the actual zip. A chapter can still tell you to type something
+#      that does not work in the package and the suite stays green, which is not a
+#      hypothetical: the manual promised "CP/M in one command" while the published archive
+#      carried no media at all. (An earlier version of this comment claimed a manual.cmake
+#      that never existed, and a claimed test is worse than a missing one -- it is the missing
+#      test plus the belief that you have it.)
+#
+# THE PACKAGE LAYOUT MIRRORS THE REPOSITORY'S examples/ TREE, and that is the point of that
+# tree (2026-07-19): the shipped set has ONE home, the tests boot it there, and assembling
+# the package is a copy rather than a rearrangement. A path that works in a clone works in
+# the zip, which is the only way the manual can be true in both.
+#
+# ---------------------------------------------------------------------------
+# DIRS -- <package path>  <=  <path in this repo>
+#
+# Each example ships as a DIRECTORY, because a machine file names the disk lying beside
+# it ("cpm22b23-56k.dsk", no directory at all) and paths inside a machine file resolve
+# against THAT FILE. Keep the .toml and its image together and the folder boots wherever
+# it is copied to -- which is the whole point of the rule.
+#
+# AND NOT EVERY EXAMPLE'S MEDIA IS AN IMAGE. examples/debugger's is a 44-byte 6800 program: a
+# .S19 to LOAD and the .LST listing that SYMBOLS LOAD reads, which is the first line of its
+# own walkthrough. So build-package.sh strips a .ASM/.LST pair only from an example that
+# ships a disk or a tape -- there it is how the image was made, and it stays in the tree.
+# Where there is no image, the listing IS the product and it ships.
+# ---------------------------------------------------------------------------
+
+DIR  examples/altair680  <=  examples/altair680
+DIR  examples/flex       <=  examples/flex
+DIR  examples/cp68       <=  examples/cp68
+
+# ---------------------------------------------------------------------------
+# FILES -- <package path>  <=  <path in this repo>
+#
+# A single file copied to the zip, TOKEN-EXPANDED on the way in (the {{MACHINE_CPM}} in
+# DRIVING-WITH-AI.md becomes the real package path, same as in the manual). Use this for a
+# loose top-level file; use DIR for a self-contained example folder.
+# ---------------------------------------------------------------------------
+
+FILE  DRIVING-WITH-AI.md   <=  docs/DRIVING-WITH-AI.md
+FILE  cheatsheet.md        <=  docs/manual/ref/cheatsheet.md
+FILE  LICENSE              <=  LICENSE
+FILE  LICENSE-SDL3         <=  LICENSE-SDL3
+
+# The cheatsheet ALSO ships as a rendered PDF, swtpcsim-cheatsheet.pdf -- the same content a
+# person can open in a file manager. It is NOT a FILE line: like swtpcsim-manual.pdf and
+# swtpcsim-changelog.pdf it is a BUILD ARTIFACT, produced by docs.yml from the .md above and
+# copied straight from the tree by build-package.sh (a FILE line would run the token sed over a
+# binary PDF and corrupt it). The .md above stays: it is the AI's plain-text crib.
+
+# LICENSE-SDL3 is SDL3's zlib licence, and it ships because SDL3 is LINKED STATICALLY INTO
+# THE BINARY (DISTRIBUTION.md 3.2) -- the code is in there, so its licence belongs in here.
+# There is no library beside the program to point at; this file is the only notice the
+# package carries. It was harmless to omit while every shipped binary was headless, and it
+# stopped being harmless the moment one was not.
+
+# Disk BASIC WAS the TBD here, and it is now real (2026-07-19): an image, a machine file
+# and an acceptance test that reaches its OK prompt. The DIR line above is the two lines
+# this note said it would take.
+
+# ---------------------------------------------------------------------------
+# TOKENS -- a machine/media reference, no longer written into prose.
+#
+# THE MANUAL AND DRIVING-WITH-AI.md NOW WRITE LITERAL PATHS, not {{TOKENS}} (2026-09-05).
+# A reader looking at the raw .md -- on GitHub, or in the tree -- sees the real command, because
+# an unrendered {{MACHINE_CPM}} is not a command anyone can type. The .md files stand on their own.
+#
+# These definitions are RETAINED and the substitution machinery still runs (build-docs.sh and
+# build-package.sh expand() over every doc, then fail on any leftover {{...}}), so a future doc
+# MAY reintroduce a token and it will resolve here -- but nothing does today. They double as the
+# canonical list of which machine/media each shorthand names. If you change a path below, grep the
+# docs for the literal and change it there too: the build no longer does that for you.
+# ---------------------------------------------------------------------------
+
+# The FLEX machine. SWTPC 6800 with SWTBUG in ROM and a DC-4 floppy controller: boot FLEX 2.0
+# off the mounted disk with SWTBUG's `D` command and it reaches the `+++` prompt.
+MACHINE_FLEX  = examples/flex/flex2-40.toml
+DISK_FLEX     = examples/flex/FLEX2-40.DSK
+
+# The Altair 680b cassette machine. The KCACR audio-cassette interface with a demo tape --
+# MON680 in ROM comes up at its `.` prompt.
+MACHINE_KCACR = examples/altair680/altair680-kcacr.toml
+TAPE_KCACR    = examples/altair680/kcacr-demo.tap

@@ -1,0 +1,810 @@
+#pragma once
+//
+// Board -- one physical card in the backplane (DESIGN.md 3, 4.1, 5).
+//
+// ONE BOARD IS ONE CARD. Not one chip, not one address range. A card carrying
+// 48K of RAM and three PROM sockets is ONE board, because that is what you would
+// pull out of the machine with your hand. Every decode question the bus can ask
+// is answered here, by the card, using knowledge only the card has.
+
+#include "core/bus.h"
+#include "core/clock.h"
+#include "core/command.h"
+#include "core/debuglog.h"
+#include "core/paths.h"
+#include "core/value.h"
+
+#include <cstdint>
+#include <memory>
+#include <ostream>
+#include <string>
+#include <vector>
+
+namespace swtpc {
+
+class ByteStream;  // host/stream.h -- a serial unit's connector, borrowed by unitStream()
+class StateWriter; // core/statefile.h -- SNAPSHOT/RESTORE
+class StateReader;
+
+// The key/value pairs of one TOML sub-unit table, in file order.
+using KeyValues = std::vector<std::pair<std::string, std::string>>;
+
+// A NAME THE OPERATOR TYPED, FOLDED FOR COMPARISON. Board ids, unit names,
+// property names, ROM names: every name in this simulator is case-insensitive,
+// because every other word the operator types already is. There were six private
+// copies of this function before it had a home.
+//
+// ASCII, deliberately. A locale-aware tolower() would make `MOUNT ACR0:TAPE` mean
+// different things in different terminals, and none of these names are text -- they
+// are identifiers out of a machine file.
+std::string lowerAscii(std::string s);
+
+// ---------------------------------------------------------------------------
+// UNITS ARE NAMED AND TYPED (Patrick, 2026-07-11).
+//
+// ONE CARD IS NOT ONE KIND OF THING. A card may carry drives AND ROM sockets AND
+// a serial port -- the DC-4 already carries a disk controller and four drives
+// -- and nothing in the bus model ever said otherwise.
+//
+// So a unit is a NAME, not an index. `MOUNT dj:drive0` and `CONNECT dj:tty`, not
+// `MOUNT dj:0` and `MOUNT dj:4` with a numbering convention buried in the card's
+// documentation. The kind is checked: mounting a disk image onto a serial port is
+// an ERROR with a sentence explaining it, not undefined behaviour that half-works.
+//
+// The index scheme was not merely inconvenient -- it could not be made safe. With
+// a flat integer namespace, `MOUNT dj:4` on a serial unit can only fail; it can
+// never explain, because the board has nothing to distinguish 4-the-drive from
+// 4-the-port.
+// ---------------------------------------------------------------------------
+enum class UnitKind {
+    Disk,   // MOUNT / UNMOUNT a host image
+    Rom,    // MOUNT / UNMOUNT an image into a socket -- a region on a memory card
+    Serial, // CONNECT / DISCONNECT an endpoint
+    Tape,   // MOUNT / UNMOUNT
+    Cpu,    // a PROCESSOR on the card. Neither mounted nor connected: it is
+            // SOLDERED ON. A card with an 8080 and an 8085 on it, switching
+            // between them when the guest does an OUT, is a real product -- so
+            // cores are units, exactly one active (DESIGN.md 3.0.1). This needs no
+            // new bus concept at all: the card decodes the OUT, sets its own
+            // latch, and reports a different active core, which is structurally
+            // identical to a bankmem card switching banks. The bus arbitrates
+            // nothing, here as everywhere.
+};
+
+const char* unitKindName(UnitKind k);
+
+// The verb that fills a unit of this kind: MOUNT for an image, CONNECT for an
+// endpoint, and "" for a Cpu core (which is neither -- it is soldered on).
+const char* unitKindVerb(UnitKind k);
+
+struct UnitDef {
+    std::string name;  // "drive0", "rom0", "tty" -- the board's own word
+    UnitKind kind = UnitKind::Disk;
+    std::string state; // what is in it now: a path, or "(empty)"
+
+    // WRITE-PROTECT IS A FIELD, NOT A PHRASE IN `state`. The 88-ACR used to spell it
+    // into its state string and the hard-sector controllers did not mention it at all,
+    // so SHOW dsk0 could not tell you a disk was mounted RO -- and nothing that wanted
+    // the answer could get it without sniffing prose for a substring.
+    //
+    // forced = WE protected it. The operator did not type RO; the host would not let
+    // us write the file (media.h). That difference must not be silent, and the mount
+    // that announced it via drainLog() has long since scrolled off the screen.
+    bool readOnly       = false;
+    bool readOnlyForced = false;
+
+    // Could this serial connector carry the guest console? True by default. The front
+    // panel's graphical bridge is CONNECTed like a serial port (it reuses the endpoint
+    // plumbing) but the guest never does character I/O over it, so it sets this false
+    // and the RUN banner never names it as "the console" (#295). Ignored for non-Serial
+    // kinds. NOT a claim a line IS the console -- only that it is eligible to be one;
+    // the banner still has to pick among the eligible live lines.
+    bool consoleCapable = true;
+};
+
+// Can this kind of unit be MOUNTed (as opposed to CONNECTed)?
+inline bool isMountable(UnitKind k) {
+    return k == UnitKind::Disk || k == UnitKind::Rom || k == UnitKind::Tape;
+}
+
+class Board {
+public:
+    virtual ~Board() = default;
+
+    virtual std::string type() const = 0;
+    std::string id;
+
+    // ---- The bus interface. ----
+
+    // Do I drive the bus for this cycle? Everything board-specific lives behind
+    // this one question: my address range, my bank, and whether the thing at this
+    // address is ROM (which never answers a write).
+    //
+    // TWO CONTRACTS, BOTH LOAD-BEARING, because the bus CACHES this answer:
+    //
+    //   1. PURE. Same board state, same cycle -> same answer, no side effects.
+    //
+    //   2. PURE, again, and that is the only contract. Decode at ANY granularity
+    //      you like -- see decodeIsPageUniform() below, which is how a card that
+    //      decodes a low address line says so.
+    //
+    // AND IF YOUR DECODE CHANGES, SAY SO -- call decodeChanged(). A bank strap, a
+    // chip pulled from a socket, going enabled/disabled. Forget it and the bus's
+    // cached tables go stale, which is a lie told quietly. Run with
+    // Bus::setVerify(true) and it stops being quiet.
+    virtual bool decodes(const BusCycle&) const { return false; }
+
+    // IS MY MEMORY DECODE THE SAME FOR EVERY ADDRESS IN A 256-BYTE PAGE?
+    //
+    // Nearly always yes: memory decoding comes off the HIGH address lines, and a
+    // card selected at 1K or 4K granularity answers a whole page or none of it.
+    // The bus caches the decode one entry per page on the strength of that.
+    //
+    // An SS-30 I/O board is what says NO: it lives in a 4-byte slot and decodes
+    // only its own registers -- the MP-S console answers control/status and data
+    // at the slot base, two addresses inside one page, and nothing else. Say false
+    // and the bus PROBES every address of every page you might be in; any page
+    // whose answer is not uniform is served by the exact, uncached two-pass path.
+    // You lose nothing but the cache, and only on the pages you actually touch.
+    virtual bool decodeIsPageUniform() const { return true; }
+
+    virtual uint8_t read(const BusCycle&) { return 0xFF; }
+    virtual void write(const BusCycle&) {}
+
+    // LOOK WITHOUT TOUCHING. Not a bus cycle: no strobe, no side effect.
+    //
+    // A read() can CONSUME -- a read of a UART's data register takes the byte and the
+    // guest never sees it -- so DISASM and TRACE must never be built on one. They
+    // would work perfectly on RAM and then quietly eat the console's input the
+    // first time someone disassembled a page with a UART mapped into it.
+    //
+    // A board that cannot answer without side effects returns FALSE, and that is
+    // an honest answer, not a failure: the byte on a real bus is only defined
+    // DURING a cycle. The caller shows FF, which is what it would have floated to.
+    virtual bool peek(uint16_t addr, uint8_t& out) const {
+        (void)addr; (void)out;
+        return false;
+    }
+
+    // ---- the IRQ line. A LEVEL ON A WIRE, AND THE BOARD DRIVES IT. ----
+
+    // Am I pulling the IRQ line right now? A UART with a character waiting and its
+    // interrupt jumper installed says yes, and keeps saying yes until the guest
+    // reads the character -- an interrupt is a LEVEL, not an event that gets
+    // queued and delivered. Model it as a level and a board cannot "lose" an
+    // interrupt, because there was never a queue to lose it from.
+    //
+    // COMBINATIONAL AND PURE, exactly like decodes(). It reports the settled state
+    // of a pin, computed from the state of the chip and nothing else. It does not
+    // advance a receiver, take a byte off a line, or do any work the guest has not
+    // paid for.
+    //
+    // IT USED TO DO ALL THREE, and there was a whole section of DESIGN.md (4.4.1)
+    // defending that. A 6850 has to notice a character has finished arriving --
+    // which happens on the chip's own clock, with no help from the CPU -- and the
+    // only thing that ever woke the card up was being asked this question, so the
+    // card advanced its receiver here. It worked. It was the wrong shape, and
+    // Patrick named it (2026-07-12): a real bus does not poll a board for interrupt
+    // status. The board sets a signal on the bus, the CPU reads it off the bus, and
+    // the board clears it when its own design says to. Polling is not how any of
+    // that works, so it is not how any of this should work.
+    //
+    // So the card does its free-running work on its OWN schedule now -- a Clock
+    // deadline it sets itself, and pump(), which is where the host's keystrokes get
+    // in -- and this is only ever asked what the pin SAYS. Which is what a wire is.
+    //
+    // The board does NOT supply a vector here. On the 6800 the interrupt is fixed:
+    // an acknowledged IRQ vectors through $FFF8, and the CPU fetches it -- no card
+    // drives a vector onto the bus.
+    virtual bool assertsInt() const { return false; }
+
+    // "MY INTERRUPT PIN MAY HAVE MOVED." The exact analogue of decodeChanged(),
+    // and for the same reason: the bus CACHES the wire -- it keeps a running
+    // wire-OR count, so intPending() is one integer test per instruction instead of
+    // a virtual call to every board in the backplane -- and a cache nobody
+    // invalidates is a lie told quietly.
+    //
+    // Call it after ANYTHING that could change assertsInt(): a register written, a
+    // character taken off the line, a deadline coming due. A spurious call costs a
+    // virtual call. A MISSING one hangs the guest forever, waiting for an interrupt
+    // that already happened -- so this is not left to trust either: Bus::setVerify(true)
+    // re-derives the whole wire the slow way on every instruction and aborts the
+    // moment a board disagrees with it.
+    void intChanged() {
+        bool now = enabled_ && assertsInt();
+        if (now != intWire_) {
+            intWire_ = now;
+            if (bus_) bus_->intWireChanged(now);
+        }
+    }
+
+    // What this card is ACTUALLY driving onto the IRQ line -- the latched wire, not a
+    // fresh computation. Bus::attach()/detach() read it to keep the wire-OR honest
+    // across a card going into or coming out of the backplane.
+    bool intWire() const { return intWire_; }
+
+    // ---- Lifecycle (DESIGN.md 6) ----
+
+    // POC* or RESET*. Board-specific: each board decides what it means. A bankmem
+    // card clears its bank latch and touches not one byte of RAM.
+    virtual void reset(Reset) {}
+
+    // Power APPLIED. The only event that loses RAM and re-reads ROM images.
+    virtual void power() {}
+
+    // Runtime enable. A boot ROM that switches itself out after boot sets this
+    // false; POWER restores it (DESIGN.md 4.2.1).
+    //
+    // A disabled card drives nothing, so this changes the decode -- hence the
+    // announcement. It is not virtual any more: an override that forgot to tell
+    // the bus would be a stale-table bug, and there was no reason for one.
+    bool enabled() const { return enabled_; }
+    void setEnabled(bool e) {
+        if (enabled_ == e) return;
+        enabled_ = e;
+        decodeChanged();
+        intChanged();   // a card that is out of the machine is not pulling the IRQ line
+    }
+
+    // ---- State: SNAPSHOT / RESTORE (DESIGN.md 13) ----
+    //
+    // Write the card's RUNTIME STATE, and read it back. This is what travels in a
+    // snapshot: registers, latches, RAM, in-flight buffers, enabled_, and any
+    // absolute-cycle deadline (as an integer -- it stays valid because the
+    // Clock's t_ travels too).
+    //
+    // THREE THINGS DO NOT TRAVEL, and getting the line right is the whole design:
+    //
+    //   - CONFIG / STRAPS set once at construction from TOML (port, baud, banks).
+    //     A snapshot RESTOREs into a machine built from the same
+    //     config, so these are already correct -- writing them would be a second
+    //     copy that could disagree. (Machine::restore refuses a topology mismatch.)
+    //
+    //   - HOST RESOURCES -- a ByteStream/socket, a DiskImage, a Display, a HostDir.
+    //     A handle cannot be serialized; it is re-opened from its (unchanged)
+    //     config. In-flight bytes ON such a resource are the card's to keep: an
+    //     uncommitted disk-write buffer or a half-typed hostbridge transfer IS
+    //     runtime state and DOES travel, because it is not on the host yet.
+    //
+    //   - A Clock::Handle. NEVER serialize one. The Clock's event queue is closures
+    //     that cannot travel (core/clock.h), so a board RE-ARMS its own deadlines in
+    //     deserialize() -- via the path it already has (refresh(), armRtc(), ...) --
+    //     from the state it just read. It does not try to restore the queue.
+    //
+    // The base handles enabled_ (a boot ROM that switched itself out must travel).
+    // An override CHAINS to the base and adds its own fields. After every board has
+    // read its state, Machine::restore rebuilds what is derived: the bus decode
+    // cache and the interrupt wire (intChanged()), so a board does not serialize
+    // those either.
+    virtual void serialize(StateWriter& w) const;
+    virtual void deserialize(StateReader& r);
+
+    // ---- Reflection (DESIGN.md 5) ----
+    // The single source of truth for SET, SHOW, TOML, CONFIG SAVE, MCP schemas,
+    // and tab completion. There is no second schema anywhere.
+    virtual std::vector<Property> properties() = 0;
+
+    // Live diagnostic lines for SHOW <id> that are NOT settable properties -- runtime
+    // facts about what the card is doing right now, which a schema cannot express (e.g.
+    // which drive a DC-4's select latch currently addresses). Empty for most
+    // cards; showBoard() prints these below the property table. Keep it a snapshot: this
+    // is a read for a stopped operator, never a place to change state.
+    virtual std::vector<std::string> statusLines() const { return {}; }
+
+    // ---- Debug channel (core/debuglog.h, DESIGN.md 7.2) ----
+    //
+    // The named diagnostic flags this card offers -- `sector`, `seek`, `serial` --
+    // one string per flag, in bit order. A board with emit sites overrides this; the
+    // default is none, so most cards have no debug channel at all and cost nothing.
+    //
+    // The framework (Bus::attach, via ensureDebugChannel) reads this ONCE, the first
+    // time the card enters a backplane, and gives the card a dbg::Channel named by its
+    // `id` carrying exactly these flags. The card's emit sites then gate on
+    // debugChannel()->on(BIT) -- one AND on the hot path -- and write through
+    // dbg::line(). The bit index of a flag is its position in THIS list, and the
+    // emit site's `enum { SECTOR, SEEK }` must agree with it (that agreement is the
+    // whole contract; there is no lookup by name on the hot path).
+    virtual std::vector<std::string> debugFlags() const { return {}; }
+
+    // This card's diagnostic channel, or null if it declared no debugFlags(). An emit
+    // site does `if (auto* d = debugChannel(); d && d->on(BIT)) dbg::line(*d) << ...`.
+    dbg::Channel* debugChannel() const { return dbg_.get(); }
+
+    // Create the channel the first time the card enters a backplane, if it carries
+    // flags. Idempotent, and deliberately NOT undone by detach: the channel lives as
+    // long as the card (the unique_ptr below), so a CONFIG LOAD -- which detaches a
+    // card from the scratch bus and re-attaches it here -- keeps the operator's
+    // DEBUG= selection. Called by Bus::attach(); `id` is already set by then.
+    void ensureDebugChannel() {
+        if (dbg_) return;
+        std::vector<std::string> f = debugFlags();
+        if (f.empty()) return;
+        dbg_ = std::make_unique<dbg::Channel>(id, std::move(f));
+    }
+
+    // The properties of ONE UNIT -- `SET sio2a:a BAUD=9600` (DESIGN.md 7.2, and
+    // the 88-2SIO's own doc). A unit is a real thing with real settings: the two
+    // halves of a 2SIO have independent baud rates and independent transforms,
+    // because they are two independent 6850s with their own crystals-worth of
+    // jumpers. Folding them into the board's properties() as `a_baud`/`b_baud`
+    // would work for a 2SIO and fall apart on the first card with eight ports.
+    //
+    // Empty for a board whose units have no settings, which is most of them.
+    virtual std::vector<Property> unitProperties(const std::string& unit) {
+        (void)unit;
+        return {};
+    }
+
+    // ---- Host services ----
+
+    // Give the host a turn: accept a socket connection, drain a keyboard. Called
+    // once per time slice by the run loop, NEVER from inside a bus cycle.
+    //
+    // This is the seam that keeps a board pure. A board's read()/write() are
+    // pure computation over state; anything that has to TALK TO THE OUTSIDE WORLD
+    // happens here, at a known point in emulated time -- which is what makes a
+    // recorded session replay identically instead of depending on when the host
+    // scheduler happened to deliver a packet.
+    virtual void pump() {}
+
+    // THE OPERATOR-VISIBLE RUN STATE, fanned out from the monitor when a RUN session
+    // starts and stops (Machine::setRunning). A board that drives a run/stop control
+    // lamp -- the front panel's WAIT indicator -- watches it here. This is emphatically
+    // NOT the debugger's per-slice `Machine::running` flag, which is true only inside
+    // debug.run() and always false when pump() is called: that one asks "is a time
+    // slice turning right now", this one asks "has the operator started the machine".
+    // Most boards have no such lamp and ignore it.
+    virtual void setRunning(bool running) { (void)running; }
+
+    // THE CPU HALTED (a HLT executed), fanned out from the monitor when a RUN session
+    // ends on a halt (Machine::setHalted). A board that drives a halt-acknowledge lamp --
+    // the front panel's HLTA indicator -- watches it here. Like setRunning this is an
+    // operator-level machine-control signal, NOT a bus cycle: the emulator runs HLT
+    // atomically, so no observed cycle carries HLTA. Cleared when a RUN starts (setRunning
+    // true). Most boards have no such lamp and ignore it.
+    virtual void setHalted(bool halted) { (void)halted; }
+
+    // THE STREAM ON ONE OF THIS CARD'S SERIAL UNITS, or null for a card that has no
+    // such line (which is most of them). It is the connector on the back panel: the
+    // monitor CONNECTs an endpoint to it, and an operator that OWNS the endpoint -- the
+    // MCP server holding a `scripted` console it feed()s and reads -- reaches it here to
+    // move bytes, without knowing whether the chip behind it is a 6850 or a COM2502.
+    // NON-OWNING: the chip owns the stream (Mc6850::stream()); this is a borrowed view,
+    // like describe() is for SHOW, not a handle to keep past the next CONNECT.
+    virtual ByteStream* unitStream(const std::string& unit) {
+        (void)unit;
+        return nullptr;
+    }
+
+    // BYTES THIS CARD HAS DELIVERED TO THE GUEST since power-on, across every line it
+    // carries, monotonic. Zero for a card with no serial line, which is most of them.
+    //
+    // The run loop sums this over the backplane to answer one question: is a byte ARRIVING
+    // anywhere? That is the ONLY thing that tells a machine taking a transfer from a machine
+    // sitting at a prompt -- both poll a quiet line and print nothing (monitor.cpp). It was
+    // asked of the console alone (Console::consumed), so a transfer on any other line was
+    // napped straight through. It is a fact about the BACKPLANE, so the backplane answers it
+    // -- like assertsInt() and drainLog() before it, not a dynamic_cast for the one card that
+    // happens to have a UART.
+    virtual uint64_t rxBytes() const { return 0; }
+
+    // A ONE-LINE PROGRESS LABEL FOR SOMETHING SLOW THE OPERATOR IS WATCHING, or "" for a
+    // card with nothing to report -- which is nearly all of them, on nearly every cycle.
+    // A tape deck loading in wall-clock time returns its counter here; the run loop paints
+    // it as a status line and knows NOTHING about tapes, exactly as rxBytes() lets it ask
+    // "is a byte arriving?" without a dynamic_cast for the one card with a UART. Pure and
+    // side-effect-free, like drainLog() is not (this does not clear anything): a status
+    // repaint must not perturb the machine it is describing.
+    virtual std::string activityLabel() const { return {}; }
+
+    // A READ-AND-CLEAR "did this device reach its auto-stop mark since you last asked?"
+    // -- the board half of a BREAK TAPE STOP device-event breakpoint (core/debug.h). The
+    // debugger polls it at the instruction boundary while such a breakpoint is armed, the
+    // same shape as the tape counter above (the run loop asks; the card answers) but it
+    // is NOT const: it latches an edge, so reading it consumes it. Default false, so every
+    // card that is not a cassette deck ignores it and needs no override. When a second
+    // device event lands this generalises to takeDeviceEvent(kind); one boolean is the
+    // deliberate first cut.
+    virtual bool takeAutoStop() { return false; }
+
+    // The machine's clock, set when the card goes into the backplane (DESIGN.md
+    // 7.5). A card with nothing time-dependent on it never looks at this, and
+    // most don't. A UART absolutely does: TDRE is a deadline, not a flag.
+    void attachClock(Clock* c) {
+        clock_ = c;
+        clockAttached();
+    }
+
+    // MOST CARDS READ THE CLOCK. THE CPU CARD WRITES TO IT -- the crystal is on that
+    // card, and `clock_hz`/`idle` are pushed INTO the Clock by the card that owns them
+    // (mits-88cpu.cpp). Which makes the direction of that one arrow load-bearing here:
+    // a card that only reads is happy to be handed a different Clock, and a card that
+    // WRITES has just been handed a clock that has never heard of it.
+    //
+    // That is not hypothetical -- it is issue #34. A machine file is assembled into a
+    // scratch Machine so a bad file cannot damage a running one (config/toml.cpp), the
+    // CPU card announced 2 MHz to the SCRATCH machine's Clock, and Machine::replaceWith
+    // then moved the card onto the real backplane and re-attached it to the real Clock,
+    // which was still free-running. `SHOW cpu0` read 2000000 off the card and the run
+    // loop went flat out, and both were telling the truth about different objects.
+    //
+    // So re-attaching REPUBLISHES, and it does it here rather than in replaceWith:
+    // the invariant is "this card's clock knows what this card told it", and the place
+    // to keep an invariant is the moment it could be broken. Default is empty, which is
+    // right for every card that only ever reads.
+    virtual void clockAttached() {}
+
+    // WHAT THE CARD WANTS SAID OUT LOUD. A bank select it could not decode, a ROM
+    // that failed to load, a sector whose checksum did not match. Drained by the
+    // monitor after every command and after every run, and cleared by the draining.
+    //
+    // VIRTUAL, AND ON Board, because it used to be a `dynamic_cast<MemoryBoard*>` in
+    // Machine::drainBoardLog() -- which meant a disk controller with something to say
+    // about a bad sector had NO WAY to say it, and would have had to grow a second
+    // channel or teach the machine about a second board type. Both are the same bug:
+    // a general facility with one card's name compiled into it.
+    //
+    // THE DEFAULT DRAINS THE FAR END OF EVERY LINE. A card that overrides this (a
+    // memory or disk controller with something to say about its own hardware) speaks
+    // for itself; a card that does not -- the 88-C700, and every printer/serial card
+    // that connects an endpoint -- has the STREAM'S log pulled up through here, so a
+    // print job that could not be spooled reaches the operator with NO per-board code
+    // (docs/printing.md 4). The board forwards opaque strings it never inspects, the
+    // same way Machine::drainBoardLog forwards these up to the monitor: it knows it
+    // has a line, not what is on the far end of it. (Body in board.cpp -- ByteStream
+    // is only forward-declared here.)
+    virtual std::vector<std::string> drainLog();
+
+    // THERE IS NO "BEHIND THE BUS" ON A BOARD, and there was: rawSize/rawRead/rawWrite
+    // used to live here, so that `RAW <id>` could address ANY card's backing store by a
+    // board-local offset. Every one of them is gone, and deliberately (Patrick,
+    // 2026-07-17: "Don't want board local offsets. Too confusing. All addresses should
+    // just reference the 64K address space").
+    //
+    // What they cost: a second address space, on every board, that only ONE board ever
+    // implemented -- the other twenty inherited a default that answered 0xFF to
+    // everything and told nobody it had not looked. What they bought was two things,
+    // and neither needed to be here. Reading behind the bus was never necessary: a ROM
+    // answers reads like any other chip, and a bank or a board you cannot see is one you
+    // SELECT (OUT its bank port, exactly as the guest must). Writing behind the bus is
+    // real, and it is one card's business rather than the backplane's -- it is
+    // MemoryBoard::poke, reached through Machine::burn, addressed like everything else.
+
+    // ---- Introspection ----
+    virtual std::vector<MapEntry> memMap() const { return {}; }
+
+    // ---- Sub-units: `id:unit` ----
+    //
+    // Regions on a memory card, drives on a controller, ports on a 2SIO. Scalar
+    // settings are properties(); a LIST of things is a sub-unit, and gets its
+    // own TOML table -- [[board.region]], [[board.drive]], [board.unit.a].
+    //
+    // The board names the tables it accepts and builds the sub-unit itself, so
+    // the TOML loader stays as ignorant of what a "region" is as the bus is.
+    virtual std::vector<std::string> subUnitTables() const { return {}; }
+
+    // ...AND IT NAMES THE KEYS, IN THE SAME VOCABULARY AS EVERYTHING ELSE.
+    //
+    // This is the one that was missing, and its absence made a liar of the sentence
+    // at the top of this section. `readonly`, `mount`, `media`, `unit`, `type`, `at`,
+    // `size` -- the most user-facing TOML in the program, the keys that carry the disk
+    // and the ROM and the write-protect flag -- were known to nothing but a chain of
+    // string compares inside each board. They appeared in no generated reference, no
+    // MCP schema and no SHOW, because there was nothing to walk. THAT is a second
+    // schema, and this is the end of it.
+    //
+    // NO get, NO set, AND THAT IS NOT AN OVERSIGHT. Every other Property accesses a
+    // thing that exists. A sub-unit key describes a thing that DOES NOT EXIST YET --
+    // there is no drive to read `readonly` off until the table has been read and the
+    // drive built. So these carry the half of Property that is a DESCRIPTION (kind,
+    // choices, range, radix, help) and leave the half that is an ACCESSOR empty. That
+    // is also exactly the half a documentation generator, a schema and a validator
+    // need, which is why one type serves both and there is no `SubUnitKey` struct.
+    //
+    // Empty for a board with no sub-unit tables, which is most of them.
+    virtual std::vector<Property> subUnitProperties(const std::string& table) const {
+        (void)table;
+        return {};
+    }
+
+    // THE DOOR. Validate a [[board.<table>]] entry against subUnitProperties() -- is
+    // the table ours, is every key one we declared, does every value fit the kind, the
+    // choices and the range -- and only then hand it to the board to build.
+    //
+    // It is NOT virtual, and addSubUnit() below is protected, so there is no way in
+    // that skips the check. That matters because there are three ways in (the TOML
+    // loader, `REGION ADD` at the monitor, and the tests) and they used to reach the
+    // board directly and get whatever policing that board happened to have written by
+    // hand. Now they cannot: the schema is declared once and enforced here, and a board
+    // that adds a key gets validation, documentation and an MCP schema for it without
+    // writing any of the three.
+    bool loadSubUnit(const std::string& table, const KeyValues& kv, std::string& err);
+
+    // THE INVERSE OF addSubUnit(), and the last board-specific line in the config
+    // layer went away when this arrived. CONFIG SAVE used to reach for a
+    // `dynamic_cast<MemoryBoard*>` to write [[board.region]] back out, which meant a
+    // controller with four [[board.drive]] entries would LOAD AND SILENTLY NOT SAVE
+    // -- you would configure the machine, save it, and get a disk controller with no
+    // drives. Both floppy boards have sub-unit tables, so both need this, and
+    // neither is testable end to end without it.
+    //
+    // THE BOARD RENDERS ITS OWN TEXT, and that is the whole design. `at = 0x0400` is
+    // zero-padded to four places, `size = "48K"` carries a suffix; Value::text(16)
+    // produces neither, and a writer that tried to guess would be a second, worse
+    // copy of knowledge the board already has. So a field hands back the EXACT string
+    // that addSubUnit() will parse back, and the round trip is then something a test
+    // can just... do: feed subUnits() straight into addSubUnit() and compare.
+    //
+    // `quoted` is the one thing the board cannot leave to the writer, because TOML
+    // cannot tell a string from a literal by looking: `type = "rom"` must have its
+    // quotes and `at = 0x0400` must not, and "48K" would parse as a NUMBER if it were
+    // bare (the size suffix is legal to parseNumber). It is not a TOML detail leaking
+    // into the board -- it is the board saying which of its values are text.
+    struct SubUnitField {
+        std::string key;
+        std::string text;      // exactly what addSubUnit() will parse back
+        bool        quoted = false;
+    };
+    struct SubUnit {
+        std::string               table;   // "region", "drive" -- no "board." prefix
+        std::vector<SubUnitField> fields;
+    };
+    virtual std::vector<SubUnit> subUnits() const { return {}; }
+
+    // Every unit this card has, in the board's own order and by the board's own
+    // names. THIS IS THE ONLY LIST -- SHOW, MOUNT, CONNECT, the MCP schemas and tab
+    // completion all read it, so they cannot disagree about what units exist.
+    virtual std::vector<UnitDef> units() const { return {}; }
+
+    // Find a unit by name, case-insensitively. False if this card has no such unit.
+    bool findUnit(const std::string& name, UnitDef& out) const;
+
+    virtual bool mount(const std::string& unit, const std::string& path, bool readOnly,
+                       std::string& err) {
+        (void)unit; (void)path; (void)readOnly;
+        err = type() + " has nothing to mount";
+        return false;
+    }
+    virtual bool unmount(const std::string& unit, std::string& err) {
+        (void)unit;
+        err = type() + " has nothing to unmount";
+        return false;
+    }
+
+    // The character-device half. No board implements these yet -- the serial cards
+    // are not written -- but the UNIT MODEL has to know that Serial is a kind, or
+    // `MOUNT dj:tty` could not be rejected with a reason.
+    virtual bool connect(const std::string& unit, const std::string& endpoint, std::string& err) {
+        (void)unit; (void)endpoint;
+        err = type() + " has nothing to connect";
+        return false;
+    }
+    virtual bool disconnect(const std::string& unit, std::string& err) {
+        (void)unit;
+        err = type() + " has nothing to disconnect";
+        return false;
+    }
+
+    // Install a PRE-BUILT stream on a serial unit, taking ownership -- the counterpart to
+    // connect(unit, endpoint) for a caller that has already resolved AND wrapped the stream
+    // itself. The `--mcp` console binding uses it to install a `scripted` line wrapped in the
+    // console's transform chain, which the endpoint grammar deliberately cannot express
+    // (host/filter.h). Default: unsupported -- a board with no serial line, or one simply not
+    // taught this seam, refuses cleanly and the caller falls back to connect() (a bare line,
+    // no transforms, but no regression). Only the serial cards that host a console need it.
+    // Body out-of-line (board.cpp): destroying a by-value unique_ptr<ByteStream> needs the
+    // COMPLETE type, and this header only forward-declares it (a core header must not pull in
+    // host/stream.h). MSVC instantiates that deleter here and rejects the incomplete type.
+    virtual bool connectStream(const std::string& unit, std::unique_ptr<ByteStream> s,
+                               std::string& err);
+
+    // ---- VERBS THE CARD BRINGS WITH IT (DESIGN.md 5.4) ------------------------
+    //
+    // A cassette can be REWOUND and a disk cannot, so `REWIND` should exist when
+    // there is an 88-ACR in the machine and not otherwise. Putting it in the
+    // built-in table would mean a verb that is always spelled and never usable --
+    // and the monitor would have to know what a tape is, which is exactly the
+    // knowledge DESIGN.md 7.7 keeps out of it.
+    //
+    // A STATIC TABLE, like the built-in one, and for the same reason: these are
+    // literals, and the monitor holds the pointer only for the length of a command.
+    //
+    // THE STATIC MENU ALWAYS WINS. The monitor prefix-resolves against the built-in
+    // table FIRST, unchanged, and only asks the boards when nothing built-in
+    // matched. So no card can shorten, shadow or destabilize a built-in
+    // abbreviation by being plugged in: `D` is DUMP and `RE` is RESET on every
+    // machine, whatever is in the slots. The cost is that a card CAN declare a verb
+    // nobody can reach (one a built-in always matches first) -- which is caught at
+    // BOARDS ADD, where it is cheap, rather than discovered by a user who types it.
+    //
+    // `built` is true and `waiting` is null on a board's verbs. The built-in table
+    // carries unbuilt commands so that abbreviations are stable across milestones
+    // (cli/commands.h); a card that is IN THE MACHINE has no unbuilt verbs.
+    virtual std::vector<CommandDef> commands() const { return {}; }
+
+    // Run one. `args` is the whole line, tokenized, ARGV-STYLE: args[0] is the verb
+    // as the user spelled it (possibly abbreviated), args[1..] are its arguments.
+    //
+    // BY CONVENTION args[1] NAMES THIS BOARD -- `<id>` or `<id>:<unit>`, exactly as
+    // MOUNT and CONNECT read it. It has to: two 88-ACRs both declare REWIND, and the
+    // verb alone cannot say which tape to rewind. The monitor uses that argument to
+    // find the board and then hands the whole line down, so the board can parse the
+    // rest however it likes.
+    virtual bool runCommand(const std::string& name, const std::vector<std::string>& args,
+                            std::ostream& out, std::string& err) {
+        (void)name; (void)args; (void)out;
+        err = type() + " has no commands";
+        return false;
+    }
+
+    // The backplane this card is plugged into, or null on the bench. Set by
+    // Bus::attach().
+    void attachBus(Bus* b) { bus_ = b; }
+
+    // ---- WHERE A RELATIVE PATH IS RELATIVE TO (core/paths.h) ------------------
+    //
+    // A path written INSIDE a machine file is relative to that file; a path TYPED
+    // at the prompt is relative to the shell. A board cannot tell the two apart --
+    // `MOUNT` is one verb and it arrives by both roads -- so it does not try. It is
+    // TOLD which window it is in, and the window is the only thing that differs.
+    //
+    // The TOML loader sets this while it is applying a file, and the monitor sets
+    // it while it is running that file's `startup` list. It is EMPTY the rest of
+    // the time, and empty means "the shell's working directory", which is what the
+    // operator standing at the prompt meant. So resolvePath() is the identity
+    // function for everything a human types, and that is the point of it.
+    //
+    // Boards that hold a path call resolvePath() when they OPEN one. What they
+    // STORE is what the operator wrote, because that is what SHOW must print and
+    // what CONFIG SAVE must write back -- a machine file that saved out a path
+    // re-based against some other file's directory would not load from its own.
+    void setConfigDir(const std::string& d) { configDir_ = d; }
+    const std::string& configDir() const { return configDir_; }
+    std::string resolvePath(const std::string& p) const { return resolveFrom(configDir_, p); }
+
+    // WHY A PATH LANDED SOMEWHERE NOBODY TYPED -- or "" when there is nothing to say.
+    //
+    // THE RULE ABOVE IS INVISIBLE AT EXACTLY THE MOMENT IT BITES. A machine file in
+    // machines/ writes `disks/x.dsk`, the loader looks in `machines/disks/x.dsk`, and
+    // the error names a path its author never wrote -- which reads as a typo rather
+    // than as a rule, and sends them hunting for a missing file that is not missing.
+    // That cost a real user a round trip to ask what was wrong, so the answer belongs
+    // in the message they already have rather than in a document they have not read.
+    //
+    // This is the only place holding both halves -- what was written and what it was
+    // resolved against -- so it is the only place that can name the rule that applied.
+    // APPEND IT TO AN ERROR; never build a message out of it alone.
+    std::string pathNote(const std::string& p) const {
+        if (configDir_.empty()) return {};    // a built-in with no directory of its own:
+                                              // the launch dir stood, and nothing was re-based.
+        if (resolvePath(p) == p) return {};   // absolute, or a `builtin:` scheme -- the rule
+                                              // never applied, so explaining it would mislead.
+        return "\n  ('" + p + "' is relative to the machine's directory, " +
+               configDir_ + "/)";
+    }
+
+    // HOW THIS CONTROLLER LAYS A DOUBLE-SIDED DISK OUT IN A RAW IMAGE -- cylinder-major
+    // (heads interleaved: T0H0,T0H1,T1H0...) or head-major (all of head 0, then head 1).
+    //
+    // A raw `.DSK` carries no geometry, so the head order is whatever the controller that
+    // reads it back decides from the file size (its probe/describeGeometry). The only
+    // caller is the IMD->raw converter (host/imd.cpp), which runs at MOUNT with the target
+    // board already in hand: it asks THIS, for the exact byte count it is about to emit, so
+    // the raw file it writes matches what this board will re-probe. A single-sided disk
+    // never asks (DiskImage::slotIndex is identical at one head).
+    //
+    // The default is cylinder-major, the usual CHS-linear order and what an IMD's own track
+    // records already are. A disk board that lays disks head-major, or whose interleave flag
+    // varies by format, OVERRIDES this -- delegating to its own probe so the two cannot
+    // drift. `bytes` is that raw image size; the answer must match the flag the board will
+    // pass to DiskImage::init() when it later mounts a file of that size.
+    virtual bool disksInterleaved(uint64_t bytes) const {
+        (void)bytes;
+        return true;
+    }
+
+    // "MY DECODE JUST CHANGED." Tell the backplane so it can re-derive the wiring.
+    // Cheap: it sets a flag, and the tables are rebuilt lazily on the next cycle.
+    // Call it liberally -- a spurious rebuild costs microseconds, a missed one
+    // costs you a day.
+    //
+    // Public because setProperty() calls it FOR every board, on every successful
+    // set: `port`, `card` (bankmem), `enabled` all change
+    // the decode, and rather than trust each board to remember that, the one path
+    // by which any property is EVER set announces it centrally. A board still calls
+    // it directly for changes that do not come through a property -- a guest OUT
+    // that moves a bank strap, a chip pulled from a socket.
+    void decodeChanged() {
+        if (bus_) bus_->invalidateDecode();
+    }
+
+    // "SOMEONE MOVED A JUMPER ON ME." Called by the ONE property path (below) after
+    // every successful SET, on every board, without trying to work out which
+    // properties actually matter -- because the moment it tries, it is wrong about
+    // some board it has never heard of.
+    //
+    // The default covers what the bus caches: the decode and the interrupt wire. A
+    // board with its own cached state or its own timers overrides this and re-arms
+    // them -- the 2SIO does, because `baud` changes a character time, `interrupt`
+    // changes which wire the chip's IRQ is soldered to, and `connect` changes what
+    // is on the end of the line. All three move a deadline the card has already set.
+    virtual void configChanged() {
+        decodeChanged();
+        intChanged();
+    }
+
+protected:
+    // BUILD the sub-unit. Reached only through loadSubUnit(), which has already
+    // rejected a table this card does not have, a key it did not declare, and a value
+    // that does not fit the kind, the choices or the range it declared it with.
+    //
+    // So what is left in here is CONSTRUCTION, and what a board still owns is what only
+    // it can know: that a region needs a `type`, that a drive needs a `unit`, that a
+    // 2048-track image will not fit a 77-track drive. What is gone is the chain of
+    // string compares ending in `else { err = "no such key"; }` -- that was the schema,
+    // written four times, agreeing with the documentation by luck.
+    virtual bool addSubUnit(const std::string& table, const KeyValues& kv, std::string& err) {
+        (void)kv;
+        err = type() + " has no [[board." + table + "]] table";
+        return false;
+    }
+
+    bool   enabled_ = true;
+    Clock* clock_   = nullptr;
+    Bus*   bus_     = nullptr;
+
+    // The directory of the machine file currently being applied to this card, or ""
+    // when a human is doing the talking. See setConfigDir() above.
+    std::string configDir_;
+
+private:
+    // What we are driving onto the IRQ line. Latched, not computed: this is a WIRE,
+    // and the bus reads it rather than asking us about it every instruction.
+    bool intWire_ = false;
+
+    // This card's diagnostic channel (core/debuglog.h), created on demand by
+    // ensureDebugChannel() when the card carries debugFlags() and enters a backplane.
+    // Null for the many cards that declare no flags. Owned here, so it registers for
+    // exactly the card's lifetime -- destructing it unregisters from the dbg registry.
+    std::unique_ptr<dbg::Channel> dbg_;
+};
+
+// ---------------------------------------------------------------------------
+// The ONE path by which any property is ever set.
+//
+// SET, the TOML loader, BOARDS ADD's k=v arguments, and the MCP board_set tool
+// all call this. That is why they cannot disagree about what is legal or what
+// base a number is in -- there is only one answer, and it is computed from the
+// board's own metadata.
+//
+// A property's `radix` decides how bare digits are read: PORT=10 is port 0x10,
+// BAUD=9600 is nine thousand six hundred. 0x forces hex, # forces decimal.
+//
+// THERE IS NO "CONFIG-TIME ONLY" PROPERTY (Patrick, 2026-07-12). Every property
+// can be set, always. Two reasons, and the second is the real one:
+//
+//   - You can only type at the prompt when the machine is STOPPED -- by ATTN, by a
+//     breakpoint, by a HLT. That is the front panel's STOP switch, and there is no
+//     moment at which a SET would be racing a running CPU.
+//
+//   - And even on real hardware the gate would be a fiction. A card being worked on
+//     sits on an EXTENDER, out where you can reach it, and its jumpers get moved
+//     with the power on. That is how it was actually done.
+//
+// The old `runtime` flag was rejected-if-running, and it never once fired: nothing
+// ever set the flag it was gated on. Deleting it removes a rule the simulator was
+// only pretending to enforce.
+// ---------------------------------------------------------------------------
+bool setProperty(Board& b, const std::string& key, const std::string& text, std::string& err);
+
+// The same path for a UNIT's properties -- `SET sio0:a BAUD=9600`.
+bool setUnitProperty(Board& b, const std::string& unit, const std::string& key,
+                     const std::string& text, std::string& err);
+
+// ...and for anything else with properties that is not a board at all. The host
+// console has properties (ATTN) and must obey the same rules about them; making
+// it a fake Board to get that would have been the wrong way round.
+bool setPropertyIn(std::vector<Property> props, const std::string& who, const std::string& key,
+                   const std::string& text, std::string& err);
+
+} // namespace swtpc

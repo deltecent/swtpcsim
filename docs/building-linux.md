@@ -1,0 +1,362 @@
+# Building `swtpcsim` on Linux
+
+**Status: verified building, testing and running on Linux.** Compiled and
+smoke-tested on **Ubuntu 22.04.4 LTS (x86_64)** with **GCC 11.4.0** on
+2026-07-14, and the **test suite was run there on 2026-07-16** — `ctest -LE slow`
+passed 13/13. The simulator starts, lists its built-in machines, and runs monitor
+commands.
+
+> **The counts below are a dated record, not a running total.** The suite has grown
+> since — `ctest -LE slow` registers 26 tests today — and CI now builds and tests
+> Linux on every push, which is the live answer. What this document is for is the
+> from-scratch procedure and the platform notes, and those have not changed.
+
+There are **no third-party dependencies** — the produced binary links only
+against the system C/C++ runtime (`libstdc++`, `libgcc_s`, `libc`, `libm`).
+SDL3 is optional and detected: install it and the video boards get a window;
+leave it out and they build headless, which is what the runs below did.
+
+---
+
+## 1. Prerequisites
+
+| Need            | Minimum         | Verified with        |
+|-----------------|-----------------|----------------------|
+| C++20 compiler  | GCC 11+         | GCC 11.4.0           |
+| CMake           | ≥ 3.20          | 3.22 (apt) / 3.28.3  |
+| Make            | any             | GNU Make 4.3         |
+| git             | any             | 2.34.1               |
+
+On Debian/Ubuntu, the whole toolchain is one line:
+
+```bash
+sudo apt-get update && sudo apt-get install -y build-essential cmake git
+```
+
+(`build-essential` provides `g++` and `make`.) Ubuntu 22.04's packaged CMake is
+3.22, which already satisfies the `>= 3.20` requirement. On Fedora/RHEL the
+equivalent is `sudo dnf install gcc-c++ cmake git make`.
+
+### A packageable build (static SDL3 + real video) needs more
+
+The line above is right for the ordinary **headless** build, which is what CI's
+Linux leg builds. A build that packages the windowed binary — static SDL3 with a
+real video backend — pulls in a pile of X11/Wayland development headers, and the
+full acceptance suite wants `expect`:
+
+```bash
+sudo apt-get install -y build-essential cmake git ninja-build pkg-config expect \
+  libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxfixes-dev \
+  libxss-dev libxtst-dev libwayland-dev libxkbcommon-dev wayland-protocols \
+  libdecor-0-dev libasound2-dev libpulse-dev
+```
+
+Two of these bite:
+
+- **`libxtst-dev` is a hard requirement.** SDL3 3.4.12 treats XTEST as a mandatory
+  X11 dependency; without the header the SDL3 configure fails outright
+  (`Couldn't find dependency package for XTEST`). `-DSDL_X11_XTEST=OFF` "fixes" it
+  by disabling part of the backend the build exists to prove — install the header
+  instead.
+- **Native Wayland will not build on Ubuntu 22.04.** Its `wayland-protocols` is
+  1.25, too old for SDL3 3.4.12's Wayland backend, which SDL treats as optional and
+  silently skips. So a package built on 22.04 is **X11-only** — fine for shipping,
+  since it runs through XWayland on Wayland desktops, but the build host's distro
+  decides whether native Wayland is even an option.
+
+`expect` is not a packaging dependency, but eighteen interactive acceptance tests
+are gated on it (`find_program(EXPECT_EXECUTABLE expect)`) and silently unregister
+without it, so install it for a representative test run.
+
+> **No root?** You can drop a prebuilt CMake into your home directory instead of
+> using the package manager:
+> ```bash
+> ver=3.28.3
+> curl -fsSL -O https://github.com/Kitware/CMake/releases/download/v${ver}/cmake-${ver}-linux-x86_64.tar.gz
+> tar xzf cmake-${ver}-linux-x86_64.tar.gz
+> export PATH=$PWD/cmake-${ver}-linux-x86_64/bin:$PATH
+> ```
+
+---
+
+## 2. Build
+
+```bash
+git clone https://github.com/deltecent/swtpcsim
+cd swtpcsim
+cmake -S . -B build
+cmake --build build --target swtpcsim        # SERIAL — no -j. See the memory note below.
+```
+
+**Build serially — no `-j`.** The command above has no `-j`, and that is
+deliberate: it compiles one file at a time. This is the recommended default,
+especially on any machine without a lot of spare RAM. Do not reach for `-j` to
+speed it up unless you have read the memory note below and know the box has the
+headroom for it.
+
+The result is `build/swtpcsim`.
+
+At configure time you may see:
+
+```
+-- expect not found -- SKIPPING the interactive CLI test (acceptance-cli).
+```
+
+That only disables one optional *test*; it does not affect building the binary.
+Install `expect` if you want that test. The build compiles with
+`-Wall -Wextra -Wpedantic` and may print warnings under GCC. By default warnings
+do not fail the build, but configuring with `-DWERROR=on` promotes them to errors
+(adds `-Werror`) — and **CI builds every leg with `-DWERROR=on`**, so a warning
+fails a PR before it merges. Run `cmake -B build -DWERROR=on` yourself to reproduce
+that gate before opening one.
+
+> **A note on the source, for the record.** GCC's libstdc++ is stricter than
+> macOS's libc++ about transitive includes: `src/util/json.cpp` used
+> `std::strlen` without including `<cstring>`, which libc++ pulls in for free and
+> libstdc++ does not. That include is now in the tree, so a fresh clone builds
+> clean — but it is the shape of bug to expect if a *new* file reaches for a
+> `<cstring>`/`<cstdint>`/`<algorithm>` name without saying so, since macOS will
+> not catch it. Build on Linux before you trust a "portable" change.
+
+### ⚠ Memory / parallelism — do not use a bare `-j`
+
+`cmake --build build -j` (unbounded) launches **one compiler process per core at
+once**. This is template-heavy C++20 code and each `cc1plus` can use several
+hundred MB to over 1 GB. On a small machine this exhausts RAM and drives the box
+into swap thrash — on the 3.8 GB host used here, a bare `-j` made it unresponsive
+(SSH timed out) until the OOM killer intervened. If that happens, kill the build
+from a console with:
+
+```bash
+killall -9 cc1plus cmake make
+```
+
+**Guidance — default to a serial build.** Unless you know the machine has plenty
+of free RAM, build **serially**: just `cmake --build build --target swtpcsim`
+with **no `-j` at all**. It is slower in wall-clock but it will not fall over,
+and for a build this size the difference is minutes, not hours. The serial build
+is exactly how this port was verified on `bart` (section 6).
+
+Only if the box genuinely has the memory headroom, cap jobs to roughly one per
+1.5–2 GB of RAM rather than turning `-j` fully loose:
+
+```bash
+cmake --build build --target swtpcsim -j2      # ~2 jobs for a 4 GB box
+```
+
+A full `-j$(nproc)` is fine *only* on a machine with ample RAM.
+
+---
+
+## 3. Smoke test
+
+```bash
+./build/swtpcsim --version      # prints "swtpcsim 1.0.0-…"
+./build/swtpcsim --list         # lists built-in machines (swtpc, altair680)
+./build/swtpcsim -x "help" swtpc   # boots the SWTPC 6800, runs one monitor command, exits
+./build/swtpcsim                # interactive: the default machine's monitor + console
+```
+
+All of the non-interactive commands above exit 0 on Linux. `--list` succeeding
+confirms the machines and ROMs embedded into `.rodata` load correctly under
+libstdc++, and `-x "help" swtpc` confirms a machine actually initializes.
+
+---
+
+## 4. What was verified
+
+- **Host:** Ubuntu 22.04.4 LTS, kernel 5.15, x86_64, 3.8 GiB RAM.
+- **Toolchain:** GCC/g++ 11.4.0, GNU Make 4.3, CMake 3.28.3, git 2.34.1.
+- **Platform layer:** the `platform_lint` target (DESIGN.md §2.1, "the OS has not
+  escaped `src/platform/`") **passes** on Linux, and CMake selected
+  `src/platform/posix/*` — the same POSIX implementation already proven on macOS.
+- **Binary:** `build/swtpcsim`, a dynamically-linked ELF x86-64 executable
+  depending only on `libstdc++`, `libgcc_s`, `libc`, `libm`.
+- **Tests (pre-rename record, 2026-07-16):** the suite was run on this host with
+  `ctest --test-dir build -LE slow` and passed clean. The suite is the `unit`
+  aggregate plus the acceptance tests — the cwd/config, history and snapshot
+  checks, the four documentation gates (`docs-reference`, `docs-manual`,
+  `docs-package`, `reference-index`), and the machine-boot oracles that need
+  `expect` (`acceptance-altair680`, `acceptance-altair680-kcacr`,
+  `acceptance-flex`, `acceptance-cli`). `socket-hw` passed; the `expect`-gated
+  tests skipped cleanly where `expect` was absent. (The count is a dated figure —
+  see the box at the top of this page for today's total.)
+- **Not covered on this host:** the `expect`-gated acceptance tests do not
+  register without `expect` installed, and the `-L hw` leg (`socket-hw`,
+  `terminal-hw`) needs a real socket and console. CI runs the full suite on every
+  push regardless — see `.github/workflows/`.
+
+---
+
+## 5. Running the tests
+
+The tests run through `ctest` against the `build/` directory:
+
+```bash
+ctest --test-dir build -LE slow     # the everyday run: unit + acceptance
+ctest --test-dir build -L hw        # the real-world leg: socket-hw + terminal-hw
+```
+
+`-LE slow` is the everyday run — it excludes any test carrying the `slow` label
+(there are none in the tree today; the flag is kept because CLAUDE.md and CI use
+it and a long CPU gate can return later). Match the pass line —
+`100% tests passed` — not merely the absence of the word "error".
+
+The `-L hw` leg is opt-in and touches the real world rather than a scripted
+stream. Two tests carry the `hw` label:
+
+- **`socket-hw`** drives the host's real kernel TCP stack over a loopback port,
+  so it always runs — no external hardware needed.
+- **`terminal-hw`** takes over the real console to check the terminal-mode
+  transitions (raw/cooked, echo, virtual-terminal input) and restores it exactly.
+  With no console it can take — for instance when `ctest` has captured stdout
+  through a pipe — it exits 77 and `ctest` reports it `Skipped`. That is the
+  expected result, not a failure: a console test that quietly "passed" with no
+  console attached would be a green tick that means nothing.
+
+---
+
+## 6. How this Linux build was tested
+
+The build was developed on macOS and validated on a real Linux box over SSH.
+The exact procedure, so it can be reproduced:
+
+1. **Remote host.** `ssh bart.deltecent.com` — an Ubuntu 22.04.4 LTS x86_64
+   machine with GCC 11.4.0, GNU Make, and git already installed. Nothing was
+   built on the Mac; every compile ran on Linux.
+
+2. **CMake without root.** At the time, `bart` had no CMake installed and the
+   account had no passwordless `sudo`, so instead of `apt` a prebuilt CMake was
+   unpacked into the home directory and put on `PATH` (the "No root?" box in
+   section 1):
+   ```bash
+   mkdir -p ~/swtpcsim-linux-build && cd ~/swtpcsim-linux-build
+   curl -fsSL -O https://github.com/Kitware/CMake/releases/download/v3.28.3/cmake-3.28.3-linux-x86_64.tar.gz
+   tar xzf cmake-3.28.3-linux-x86_64.tar.gz
+   export PATH=$PWD/cmake-3.28.3-linux-x86_64/bin:$PATH
+   ```
+   **This step is no longer needed on `bart`** — it now has a system CMake 3.22.1
+   at `/usr/bin/cmake`, which clears the `>= 3.20` floor. The box above is kept
+   because it is still the answer on *any* host without root. On a normal machine
+   with sudo, `sudo apt-get install -y cmake` is simpler.
+
+3. **Throwaway clone.** The repo was cloned fresh on `bart` into
+   `~/swtpcsim-linux-build/swtpcsim` — a scratch copy, kept entirely separate
+   from the macOS working tree. The one build error encountered — `std::strlen`
+   in `src/util/json.cpp` without `<cstring>` — was fixed there to get a clean
+   build; that include has since been committed upstream, so a fresh clone no
+   longer needs it.
+
+4. **Configure + build.** `cmake -S . -B build`, then
+   `cmake --build build --target swtpcsim`. The first attempt used a bare `-j`
+   and drove the 3.8 GB host into swap thrash until it stopped responding to SSH
+   (see the memory warning in section 2); the successful build was **serial**,
+   and completed with exit 0, producing `build/swtpcsim`.
+
+5. **Smoke test.** The section-3 commands (`--version`, `--list`,
+   `-x "help" default`) were run over the same SSH session and all exited 0,
+   confirming the binary not only links but initializes a machine and loads its
+   embedded ROMs on Linux.
+
+6. **Test suite (added 2026-07-16).** The whole procedure was repeated from a
+   fresh clone of `master`, this time building **all** targets rather than just
+   `--target swtpcsim` — ctest needs the test executables too. Serial build,
+   exit 0, no errors. Then `ctest --test-dir build -LE slow` passed clean (a
+   dated figure — see the box at the top of this page for today's total). See
+   section 4.
+
+To reproduce on any Linux host, do the same: get a C++20 toolchain + CMake ≥
+3.20, clone, and build serially (or with a bounded `-j`) per section 2.
+
+---
+
+## 7. Rebuilding after a `git pull`
+
+**The commands are the same as for a fresh clone.** There is no separate
+procedure, and no need to delete `build/`:
+
+```bash
+git pull
+cmake -S . -B build          # no-op if nothing about the configuration changed
+cmake --build build          # rebuilds only what the pull touched
+```
+
+You can even skip the `cmake -S . -B build` line: the generated Makefile re-runs
+CMake by itself when `CMakeLists.txt` changes. Running it costs a second and is
+the safer habit.
+
+This works because of two deliberate properties of the tree, and it is worth
+knowing *why* rather than cargo-culting a `rm -rf build`:
+
+- **The C++ sources are listed explicitly in `CMakeLists.txt`, not globbed.** So
+  a pull that adds a `.cpp` necessarily changes `CMakeLists.txt`, which triggers
+  the automatic reconfigure. A new source file cannot be silently missed.
+- **The things that *are* globbed — `roms/`, `machines/` — all use
+  `CONFIGURE_DEPENDS`** (`CMakeLists.txt` §"ROMs"/§"Built-in machines"), which
+  re-globs on every *build*, not just on configure. A pull that adds or deletes
+  a ROM or a machine `.toml` is picked up with no manual step.
+
+### When you *do* need to delete `build/`
+
+The build directory caches **absolute paths**, so it is not portable. Delete and
+re-create it if you:
+
+- **moved or renamed the source directory** (this project has been renamed once
+  already), or
+- **changed compilers** (e.g. switched GCC versions or to Clang).
+
+The rename case fails loudly rather than silently, which is the good outcome:
+
+```
+CMake Error: The current CMakeCache.txt directory .../build/CMakeCache.txt is
+different than the directory .../build where CMakeCache.txt was created.
+CMake Error: The source ".../CMakeLists.txt" does not match the source
+".../CMakeLists.txt" used to generate cache.  Re-run cmake with a different
+source directory.
+```
+
+The fix is `rm -rf build` and configure again. That error means the build
+directory is stale, **not** that the pull broke anything.
+
+> **A different CMake, same build directory.** Reconfiguring an existing
+> `build/` with a *different CMake version* than the one that generated it (say,
+> a `$HOME` 3.28 one time and `/usr/bin/cmake` 3.22 the next) is accepted without
+> an error — but it regenerates the build system and you get a **full rebuild**,
+> not an incremental one. Harmless, just slow, and confusing if you expected
+> "nothing changed" to be instant. Keep `PATH` consistent between invocations,
+> or `rm -rf build` and stop thinking about it.
+
+**If a build fails right after a pull, suspect the build directory before
+suspecting the code.** `rm -rf build && cmake -S . -B build && cmake --build
+build` is the one-line answer, and it distinguishes the two cases: if a clean
+build works, the tree was fine and the cache was stale.
+
+---
+
+## 8. The plain `make` convenience build (NOT the supported build)
+
+There is a `Makefile` at the repository root that builds the `swtpcsim` binary
+with nothing but `make` and a C++20 compiler — no CMake. It exists so the SIMH
+crowd ("just `make` and `gcc`") can build this too, and it is the *same* file that
+builds under MinGW on Windows.
+
+> **CMake is authoritative.** The Makefile builds only the binary — not the test
+> suite, the generated reference docs, the `platform_lint` guard, or any release
+> packaging. For anything beyond a quick local binary, use §2.
+
+```bash
+make               # auto-detects SDL3 (pkg-config) and CUPS (cups-config)
+make NO_SDL=1      # force a headless build
+make CXX=clang++   # pick a compiler
+make help          # show what was detected and the switches
+./build-make/swtpcsim --list
+```
+
+The binary and all intermediates land in **`build-make/`** — kept out of `build/`,
+which is the CMake build's, so the two never collide.
+
+It reproduces CMake's three generated sources (embedded ROMs, embedded machines,
+version header) **byte-for-byte** via a bootstrap generator it compiles first,
+`tools/embed.cpp` — the SIMH `sim_BuildROMs.c` pattern, so it needs neither CMake
+nor a POSIX shell. Where a CMake `build/` also exists, `make check-gen` diffs the
+two to prove they match. See `docs/building-windows.md` §9 for the MinGW notes.

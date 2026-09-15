@@ -1,0 +1,75 @@
+# Boot CP/68 from CP68.DSK on the SWTPC 6800 (SWTBUG monitor + MP-S console + DC-4 floppy):
+#
+#     swtpcsim examples/swtpc/cp68/cp68.toml
+#     $ (SWTBUG prompt)
+#     D                       (SWTBUG disk boot -> CP/68 signon and its "." prompt)
+#
+#     HEMENWAY ASSOCIATES CP/68-1.0
+#     .
+#
+# CP/68 (TSC's CP/68 1.0) is single-density, 35 tracks x 18 sectors x 128 bytes = 80,640 B.
+# Its track 0 is laid out 0,1,2,4..18 (sector ID 0 first, no sector 3) -- unlike FLEX, whose
+# every track starts at sector 1. The DC-4 board probes this geometry from the image size and
+# stamps the track-0 sector-ID map on mount, so nothing here configures tracks/sides. Boot is
+# the same SWTBUG "D" command FLEX uses -- CP/68's cold-loader lives at track 0 too.
+#
+# Drive 0 is mounted READ-ONLY so looking around CP/68 can never dirty the image; drop
+# writeprotect to save files back.
+#
+# This is the shipped machines/swtpc.toml with the disk mounted -- see that file for why
+# each board and address is what it is.
+
+[machine]
+name    = "cp68"
+startup = ["RESET", "RUN"]
+
+[[board]]
+type     = "6800"
+id       = "cpu0"
+clock_hz = 0
+
+[[board]]
+type = "mps"
+id   = "mps0"
+base = 8004
+
+  [board.unit.tty]
+  connect = "console"
+  baud    = 9600
+
+[[board]]
+type   = "dc4"
+id     = "dc40"
+base   = 8018
+drives = 4
+
+  [[board.drive]]
+  unit         = 0
+  mount        = "CP68.DSK"
+  writeprotect = true
+
+[[board]]
+type = "memory"
+id   = "mem0"
+fill = "random"
+
+  [[board.region]]
+  type = "ram"
+  at   = 0000
+  size = "32K"
+
+  [[board.region]]
+  type = "ram"
+  at   = A000
+  size = "8K"
+
+  [[board.region]]
+  type  = "rom"
+  at    = E000
+  mount = "builtin:swtbug"
+
+  [[board.region]]
+  type     = "rom"
+  at       = FC00
+  mount    = "builtin:swtbug"
+  relocate = true

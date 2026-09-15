@@ -1,0 +1,532 @@
+#!/bin/sh
+#
+# Assemble the distribution: the archive we actually hand people.
+#
+#   swtpcsim                the program
+#   QUICK-START.pdf          CP/M in one command -- the first thing to open (docs.yml builds it)
+#   swtpcsim-manual.pdf     the manual -- and NOTHING in it names a file that is not here
+#   swtpcsim-changelog.pdf  what changed, per release (docs/changelog/, built by docs.yml)
+#   swtpcsim-cheatsheet.pdf the quick reference, rendered (docs/manual/ref/, built by docs.yml)
+#   swtpcsim-monitor.pdf    the swtpcsim> prompt (docs/monitor/, built by docs.yml)
+#   swtpcsim-debugger.pdf   debugging from that prompt (docs/debugger/, built by docs.yml)
+#   DRIVING-WITH-AI.md       the same machines, written for an AI assistant driving them over MCP
+#   cheatsheet.md            the quick reference as plain text, for the AI assistant to read
+#   LICENSE                  ours (MIT)
+#   LICENSE-SDL3             SDL3's, because SDL3 is linked STATICALLY INTO the program
+#   examples/altair680/      \
+#   examples/flex/            \  the examples, each a self-contained folder: a machine file
+#   examples/cp68/           /  and the media it mounts, lying beside it
+#
+# ONE ARCHIVE, FOR ONE PLATFORM, BUILT ON THAT PLATFORM. --target names it and picks the
+# format; it does not cross-compile, because nothing here does. See DISTRIBUTION.md 1 and 4.2.
+#
+# THE CONTENTS COME FROM docs/package.map, and from nowhere else. That file is the single
+# source of truth for three things that would otherwise drift: the tokens the manual writes
+# ({{MACHINE_CPM}} and friends), the directories this script copies, and what the docs tests
+# check. Add an example by adding a DIR line there -- not by editing this script.
+#
+# MOST DISK IMAGES ARE NOT IN GIT (*.dsk / *.DSK are gitignored: they are large and they are
+# not ours to redistribute) -- but EVERY image this package ships is one of the tracked few
+# that .gitignore names one at a time, so a fresh clone builds a zip that actually boots and
+# nothing here has to be fetched first. That is what lets this script be strict: media missing
+# from an example directory is a file that should be in your tree and is not, so it REFUSES TO
+# PACKAGE rather than quietly shipping a folder with a machine file and no machine in it --
+# which would boot to a dead prompt and look like our bug.
+#
+#   usage: tools/build-package.sh [--target <target>] [--pdf <file>] [outdir]
+#
+#     --target   macos-arm64 | macos-x86_64 | linux-x86_64 | windows-x86_64
+#                Names the archive and picks its format (.tar.gz, or .zip for Windows).
+#                DEFAULTS TO THIS HOST, which is right on all four machines: each one
+#                builds NATIVELY (DISTRIBUTION.md 4.3), so this is a naming and format
+#                choice and never cross-compilation.
+#     --pdf      Use THIS manual instead of rebuilding one. See below -- it is the flag
+#                that keeps four machines shipping the SAME document.
+
+set -eu
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+map=$root/docs/package.map
+
+target=""
+pdf=""
+out=""
+
+usage() {
+  cat <<'USAGE'
+usage: tools/build-package.sh [--target <target>] [--pdf <file>] [outdir]
+
+  --target   macos-arm64 | macos-x86_64 | linux-x86_64 | windows-x86_64
+             Names the archive and picks its format (.tar.gz, or .zip for Windows).
+             Defaults to this host.
+  --pdf      Use THIS manual instead of rebuilding one. Pass the manual the
+             coordinator built; see DISTRIBUTION.md 4.2 step 6.
+  outdir     Where to stage and write the archive. Default: dist/
+USAGE
+  exit "${1:-0}"
+}
+
+while [ $# -gt 0 ]; do
+  case $1 in
+    --target) [ $# -ge 2 ] || { echo "build-package: --target needs a value" >&2; exit 1; }
+              target=$2; shift 2 ;;
+    --pdf)    [ $# -ge 2 ] || { echo "build-package: --pdf needs a value" >&2; exit 1; }
+              # Check it HERE, not where it is used: by then the staging directory has been
+              # wiped and rebuilt, so a mistyped path costs a rebuild to discover.
+              [ -f "$2" ] || { echo "build-package: --pdf $2 does not exist" >&2; exit 1; }
+              pdf=$(cd "$(dirname "$2")" && pwd)/$(basename "$2")
+              shift 2 ;;
+    -h|--help) usage 0 ;;
+    -*)       echo "build-package: unknown option $1" >&2; usage 1 ;;
+    *)        [ -z "$out" ] || { echo "build-package: only one outdir, got '$out' and '$1'" >&2; exit 1; }
+              out=$1; shift ;;
+  esac
+done
+
+out=${out:-$root/dist}
+
+# WHICH TARGET, AND SO WHICH ARCHIVE FORMAT. A typo here would otherwise produce a
+# correctly-built package under a name nobody is looking for, uploaded to a release where
+# nothing checks it -- so an unknown target is fatal, not a warning.
+if [ -z "$target" ]; then
+  case "$(uname -s)" in
+    Darwin)  case "$(uname -m)" in
+               arm64)  target=macos-arm64 ;;
+               x86_64) target=macos-x86_64 ;;
+             esac ;;
+    Linux)   [ "$(uname -m)" = "x86_64" ] && target=linux-x86_64 ;;
+    MINGW*|MSYS*|CYGWIN*) target=windows-x86_64 ;;
+  esac
+  [ -n "$target" ] || {
+    echo "build-package: cannot tell what this host is ($(uname -s)/$(uname -m))." >&2
+    echo "Pass one explicitly: --target macos-arm64|macos-x86_64|linux-x86_64|windows-x86_64" >&2
+    exit 1
+  }
+fi
+
+case $target in
+  macos-arm64|macos-x86_64|linux-x86_64) ext=tar.gz ;;
+  windows-x86_64)                        ext=zip ;;
+  *) echo "build-package: unknown target '$target'" >&2
+     echo "It is one of: macos-arm64 macos-x86_64 linux-x86_64 windows-x86_64" >&2
+     exit 1 ;;
+esac
+
+# WHERE THE BINARY IS. MSVC's generator is multi-config and puts it under Release/, so the
+# plain build/swtpcsim that every Unix machine has is not universal. Probe rather than
+# assume -- and do NOT test -x on the Windows paths, where the execute bit means nothing.
+sim=""
+for cand in "$root/build/swtpcsim" "$root/build/Release/swtpcsim.exe" "$root/build/swtpcsim.exe"; do
+  case $cand in
+    *.exe) [ -f "$cand" ] && { sim=$cand; break; } ;;
+    *)     [ -x "$cand" ] && { sim=$cand; break; } ;;
+  esac
+done
+[ -n "$sim" ] || {
+  echo "build-package: no built binary under $root/build. cmake --build build --config Release" >&2
+  exit 1
+}
+
+# STRIP CR, OR WINDOWS PUTS ONE IN EVERY FILENAME BELOW. MSVC opens stdout in TEXT MODE, so
+# the .exe emits "swtpcsim 0.2.0\r\n" -- and awk's default field separator is [ \t\n], which
+# does NOT include \r. So $2 would be "0.2.0<CR>", and that CR would land in the staging
+# directory name, the archive name, and the version echoed in the closing message. A no-op
+# everywhere else: there are no carriage returns in this output on Unix.
+ver=$("$sim" --version | tr -d '\r' | awk '{print $2}')
+
+# CLEAR THIS TARGET'S STALE SIBLINGS -- BEFORE THE REFUSALS BELOW, NOT AFTER.
+#
+# A leftover swtpcsim-<ver>-<target>/ from an earlier run holds whatever build/swtpcsim
+# existed THEN -- and it looks exactly like the release. That is not hypothetical: on 2026-07-20
+# a stale pre-tag staging directory reported "swtpcsim 0.2.0 (v0.1.0-82-gb634269) (modified)"
+# and read as a version bug in the shipped archives, which were correct.
+#
+# It runs HERE because the refusals below exit 1, and until 2026-07-20 they exited leaving the
+# PREVIOUS run's archive sitting under the exact name the release process expects (observed on
+# the Intel Mac: a refused headless run left the good tarball untouched at its original
+# timestamp). Anyone uploading by filename rather than by watching the exit code would ship it.
+# A refused run must leave nothing that can be mistaken for ITS OWN output.
+#
+# SCOPED TO THIS TARGET, deliberately (2026-07-21). dist/ is also the release COLLECTION point:
+# the other three machines scp their finished archives here (DISTRIBUTION.md 6), so the old
+# broad `rm -rf swtpcsim-*` would delete a sibling platform's delivered package on any re-run.
+# Clearing only swtpcsim-*-<target> removes this run's own stale staging dir and archive and
+# nothing else -- no target name is a suffix of another, so the glob cannot cross platforms.
+# (The old un-suffixed swtpcsim-<ver>/ is no longer produced -- staging is always suffixed.)
+rm -rf "$out"/swtpcsim-*-"$target" \
+       "$out"/swtpcsim-*-"$target".*
+
+# ---------------------------------------------------------------------------
+# REFUSE TO PACKAGE A BINARY THAT CANNOT OPEN A WINDOW.
+#
+# THIS IS THE CHECK v0.2.0 DID NOT HAVE. All three archives shipped headless: no CI leg had
+# SDL3, find_package failed, display_sdl.cpp compiled nowhere, and the video window the manual
+# documents at length could not be opened from anything released. Nothing caught it, because a
+# headless binary runs `swtpcsim vdm1` perfectly happily and draws nothing. DISTRIBUTION.md
+# 4.2 step 2 puts a STOP on the configure line -- but that is a line a person has to read, and
+# not reading it is exactly how this shipped. This one cannot be not-read.
+#
+# ASK THE BINARY, DO NOT PROBE THE FILE. nm/otool/dumpbin all mean a toolchain the packaging
+# machine may not have -- Git Bash on Windows has no `nm` -- and 7 records that `strings` gives
+# a FALSE NEGATIVE here, because SDL_CreateWindow is a symbol and not a literal. SHOW VERSION
+# carries a `video` row for this, so the answer is the same on all four machines.
+# The row now names the compiled-in video backends and says "windowed (...)" ONLY when a
+# real one (x11/wayland/cocoa/...) is present. A dummy-only SDL3 -- the Linux hole where no
+# X11/Wayland headers were found at configure time -- reports "NO WINDOW BACKEND" instead, so
+# demanding the "windowed (" marker rejects both the headless build AND the dummy-only one.
+if ! "$sim" -n -x 'SHOW VERSION' 2>/dev/null | grep -q '^ *video *SDL3 -- windowed ('; then
+  echo "build-package: THIS BINARY CANNOT OPEN A WINDOW -- refusing to package it." >&2
+  echo >&2
+  "$sim" -n -x 'SHOW VERSION' 2>&1 | sed 's/^/    /' >&2
+  echo >&2
+  echo "The video row must read 'SDL3 -- windowed (...)'. Two ways it does not:" >&2
+  echo "  * 'none -- headless'      -- no SDL3 at all, which is what every v0.2.0 archive" >&2
+  echo "                              shipped: the video machines run and draw nothing." >&2
+  echo "  * 'NO WINDOW BACKEND'     -- SDL3 built with only its dummy driver, because no" >&2
+  echo "                              X11/Wayland dev headers were present when it was built." >&2
+  echo "                              Rebuild SDL3 with the video headers installed" >&2
+  echo "                              (tools/build-sdl3-static.sh now catches this too)." >&2
+  echo >&2
+  echo "Configure against a real static SDL3 and look for" >&2
+  echo "    -- SDL3 found -- video boards enabled (windowed)" >&2
+  echo "    cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH=<static SDL3 prefix>" >&2
+  exit 1
+fi
+
+# ...and refuse one that links SDL by a path only this machine has. A Homebrew build names
+# /opt/homebrew/opt/sdl3/lib/libSDL3.0.dylib absolutely, so it starts on no other machine --
+# 3.2's trap, and the reason static is the answer. A path relative to the binary
+# (@executable_path, @rpath, $ORIGIN) is the documented dynamic FALLBACK and is allowed.
+#
+# There is no portable way to ask this, so it runs where the tool exists and SAYS SO when it
+# does not, rather than passing quietly and reading as checked.
+case $(uname -s) in
+  Darwin) linkage=$(otool -L "$sim" 2>/dev/null | grep -i sdl || true) ;;
+  Linux)  linkage=$(ldd     "$sim" 2>/dev/null | grep -i sdl || true) ;;
+  *)      linkage=""
+          echo "build-package: NOTE -- cannot check SDL linkage on this host ($(uname -s))." >&2
+          echo "  Per DISTRIBUTION.md 7, run: dumpbin /dependents swtpcsim.exe" >&2 ;;
+esac
+if [ -n "$linkage" ] && ! echo "$linkage" | grep -q '@executable_path\|@rpath\|\$ORIGIN'; then
+  echo "build-package: THIS BINARY LINKS SDL BY ABSOLUTE PATH -- refusing to package it." >&2
+  echo "$linkage" | sed 's/^/    /' >&2
+  echo >&2
+  echo "It starts on no machine but this one. Build SDL3 static (tools/build-sdl3-static.sh)" >&2
+  echo "and configure with -DCMAKE_PREFIX_PATH=<that prefix>. See DISTRIBUTION.md 3.2." >&2
+  exit 1
+fi
+
+pkg=$out/swtpcsim-$ver-$target
+
+# The target suffix makes the staging directory self-documenting; the cleanup above (which runs
+# before the refusals, deliberately) makes sure it is also the only one here.
+mkdir -p "$pkg"
+
+cp "$sim" "$pkg/"
+
+# The manual. It is a DELIVERABLE, not an optional extra -- a package without it is a binary
+# and a pile of disk images, and nobody can tell what to do with those.
+#
+# HAND IT IN (--pdf) FOR A RELEASE. The coordinator builds this document ONCE and gives the
+# same file to all four machines. Rebuilding it here instead means each machine's local
+# toolchain decides what ships: pandoc's HTML is the paginator's input, docs.yml PINS pandoc
+# at 3.6, Homebrew ships 3.10, and A DIFFERENT PANDOC IS A DIFFERENT DOCUMENT. v0.2.0 hit
+# exactly this and was fixed by restoring CI's PDF over this script's output. The flag is
+# also what keeps pandoc, a Chromium and poppler off the three secondary machines entirely.
+if [ -n "$pdf" ]; then
+  cp "$pdf" "$pkg/swtpcsim-manual.pdf"
+else
+  local_pandoc=$(pandoc --version 2>/dev/null | head -1 || true)
+  echo "build-package: WARNING -- rebuilding the manual with the LOCAL toolchain." >&2
+  echo "  ${local_pandoc:-pandoc: NOT FOUND}" >&2
+  # SAY WHY WHEN THE NUMBERS MATCH, or the warning reads as a false alarm and gets ignored.
+  # Reported from the Intel Mac, 2026-07-20: it has pandoc 3.6, so the warning printed
+  # "pandoc 3.6" directly above "docs.yml pins pandoc 3.6" and looked like a broken check.
+  # It is not -- the rebuild there really did produce a different document.
+  if [ "$local_pandoc" = "pandoc 3.6" ]; then
+    echo "  docs.yml pins pandoc 3.6 -- the SAME NUMBER, and still not the same document:" >&2
+    echo "  fonts and browser differ per machine, and the paginator is what makes the PDF." >&2
+  else
+    echo "  docs.yml pins pandoc 3.6, and a different pandoc is a different document." >&2
+  fi
+  echo "  For a RELEASE, pass --pdf with the manual the coordinator built." >&2
+
+  # BUILD IT SOMEWHERE ELSE. build-docs.sh's argument is its OUTPUT directory, and it was
+  # handed $root/docs -- so this path rewrote docs/swtpcsim-manual.pdf AND
+  # docs/swtpcsim-devguide.pdf, both tracked, and said nothing about it. Reported from the
+  # Intel Mac, 2026-07-20. The devguide is not even part of packaging.
+  #
+  # That is the v0.2.0 trap wearing a different hat: --pdf keeps a local PDF out of the
+  # PACKAGE, and this kept it in the REPOSITORY, one `git commit -a` away from overwriting
+  # CI's. CLAUDE.md's "git checkout -- the PDFs afterwards" rule is attached to build-docs.sh,
+  # and nobody running the PACKAGING script has any reason to think they just invoked it.
+  docs_tmp=$out/.docs-build
+  rm -rf "$docs_tmp"
+  mkdir -p "$docs_tmp"
+  "$root/tools/build-docs.sh" "$docs_tmp" > /dev/null
+  cp "$docs_tmp/swtpcsim-manual.pdf" "$pkg/"
+  rm -rf "$docs_tmp"
+fi
+
+# The changelog. Also a DELIVERABLE (docs/manual/package.md names it), and also a committed CI
+# artifact -- docs.yml builds and commits docs/swtpcsim-changelog.pdf exactly like the manual,
+# so a checkout AT THE TAG already has it. Copy it STRAIGHT FROM THE TREE, not through the FILE
+# loop below: that loop runs expand()'s token-substitution sed over every file, and sed over a
+# binary PDF is a way to corrupt one. No --changelog flag, deliberately -- there is no local
+# rebuild to guard against here as there is for the manual (--pdf), only the one committed file.
+changelog=$root/docs/swtpcsim-changelog.pdf
+[ -f "$changelog" ] || {
+  echo "build-package: docs/swtpcsim-changelog.pdf is missing -- CI (docs.yml) builds it." >&2
+  echo "  It is committed at the tag, so a checkout of vX.Y.Z has it. Are you on the tag, or" >&2
+  echo "  packaging before docs.yml has run on master? See DISTRIBUTION.md 5 step 2." >&2
+  exit 1
+}
+cp "$changelog" "$pkg/"
+
+# The quick reference, rendered. Like the changelog it is a committed CI artifact (docs.yml
+# builds docs/swtpcsim-cheatsheet.pdf from docs/manual/ref/cheatsheet.md), so copy it STRAIGHT
+# FROM THE TREE, not through the FILE loop below -- that loop runs expand()'s sed over every
+# file, and sed over a binary PDF corrupts it. The Markdown ships too, through the FILE table,
+# because it is the AI's plain-text crib (DRIVING-WITH-AI.md reads it); this PDF is the same
+# content a person can open in a file manager.
+cheatsheet=$root/docs/swtpcsim-cheatsheet.pdf
+[ -f "$cheatsheet" ] || {
+  echo "build-package: docs/swtpcsim-cheatsheet.pdf is missing -- CI (docs.yml) builds it." >&2
+  echo "  It is committed at the tag, so a checkout of vX.Y.Z has it. Are you on the tag, or" >&2
+  echo "  packaging before docs.yml has run on master? See DISTRIBUTION.md 5 step 2." >&2
+  exit 1
+}
+cp "$cheatsheet" "$pkg/"
+
+# The monitor and the debugger. Two more committed CI artifacts (docs.yml builds
+# docs/swtpcsim-monitor.pdf and docs/swtpcsim-debugger.pdf from docs/monitor/ and
+# docs/debugger/), split out of the manual because they describe driving swtpcsim itself.
+# docs/manual/package.md names them, so they are DELIVERABLES; copy each STRAIGHT FROM THE
+# TREE for the same reason as the changelog and cheatsheet -- the FILE loop's token sed would
+# corrupt a binary PDF.
+for doc in monitor debugger; do
+  pdf=$root/docs/swtpcsim-$doc.pdf
+  [ -f "$pdf" ] || {
+    echo "build-package: docs/swtpcsim-$doc.pdf is missing -- CI (docs.yml) builds it." >&2
+    echo "  It is committed at the tag, so a checkout of vX.Y.Z has it. Are you on the tag, or" >&2
+    echo "  packaging before docs.yml has run on master? See DISTRIBUTION.md 5 step 2." >&2
+    exit 1
+  }
+  cp "$pdf" "$pkg/"
+done
+
+# The quick-start sheet. A committed CI artifact (docs.yml builds docs/QUICK-START.pdf from
+# docs/QUICK-START.md via build-docs.sh's build_single), and docs/manual/package.md names it,
+# so it is a DELIVERABLE. Copy it STRAIGHT FROM THE TREE -- like the changelog and the
+# cheatsheet, not through the FILE loop, whose token sed would corrupt a binary PDF. It keeps
+# its own name (no swtpcsim- prefix): QUICK-START.pdf is the first file a package holder opens.
+for pdf_name in QUICK-START; do
+  pdf=$root/docs/$pdf_name.pdf
+  [ -f "$pdf" ] || {
+    echo "build-package: docs/$pdf_name.pdf is missing -- CI (docs.yml) builds it." >&2
+    echo "  It is committed at the tag, so a checkout of vX.Y.Z has it. Are you on the tag, or" >&2
+    echo "  packaging before docs.yml has run on master? See DISTRIBUTION.md 5 step 2." >&2
+    exit 1
+  }
+  cp "$pdf" "$pkg/"
+done
+
+# ...and NOT the Developer Guide. That document is about the source, which is not in here.
+
+# ---------------------------------------------------------------------------
+# The loose FILES, from the FILE table -- TOKEN-EXPANDED on the way in, exactly like the
+# manual's chapters. DRIVING-WITH-AI.md writes {{MACHINE_CPM}} rather than a literal path, so
+# the path a user reads is the path that is actually in the zip, and it cannot drift from the
+# DIR table above. The substitution is the same sed loop as tools/build-docs.sh's expand().
+# ---------------------------------------------------------------------------
+expand() {  # expand <src> <dst> : copy, substituting {{TOKEN}} from package.map
+  cp "$1" "$2"
+  sed -n 's/^\([A-Z_][A-Z0-9_]*\)[[:blank:]]*=[[:blank:]]*\(.*\)$/\1	\2/p' "$map" |
+  while IFS="$(printf '\t')" read -r key val; do
+    sed "s|{{$key}}|$val|g" "$2" > "$2.tmp" && mv "$2.tmp" "$2"
+  done
+}
+
+# READ THE TABLES FROM A HERE-DOC, NOT A PIPE. A `while read` fed by a pipe runs in a
+# SUBSHELL: an `exit 1` in the body ends only that subshell, and a variable it sets does not
+# survive the loop. The second half is what actually bit -- see `missing` below, which was
+# assigned in a piped loop and read after it, so it was always empty.
+#
+# The `exit 1`s here happened to work anyway, because a pipeline's status IS its last
+# command's and the `while` is last, so `set -e` fired. That is a thin thing to rest a guard
+# on -- append one command to the pipeline and every check in this file goes quiet. A
+# here-doc does not depend on it.
+FILES=$(sed -n 's/^FILE[[:blank:]]*\([^[:blank:]]*\)[[:blank:]]*<=[[:blank:]]*\(.*[^[:blank:]]\)[[:blank:]]*$/\1|\2/p' "$map")
+
+while IFS='|' read -r dest src; do
+  [ -n "$dest" ] || continue
+  if [ ! -f "$root/$src" ]; then
+    echo "build-package: package.map names $src, which does not exist" >&2
+    exit 1
+  fi
+  mkdir -p "$pkg/$(dirname "$dest")"
+  expand "$root/$src" "$pkg/$dest"
+  # An unexpanded token is a broken instruction shipped to a user -- refuse it, as the manual does.
+  if grep -q '{{[A-Z_]*}}' "$pkg/$dest"; then
+    echo "build-package: $dest has UNEXPANDED TOKENS -- add them to docs/package.map:" >&2
+    grep -n '{{[A-Z_]*}}' "$pkg/$dest" >&2
+    exit 1
+  fi
+done <<EOF
+$FILES
+EOF
+
+# ---------------------------------------------------------------------------
+# The examples, from the DIR table.
+# ---------------------------------------------------------------------------
+missing=""
+
+# POSIX classes, not \t: BSD sed does not read `\t` as a tab, it reads it as the LETTER t --
+# so `[ \t]*` happily ate the leading "t" of "tapes/..." and then complained that
+# "apes/4KBasic31" did not exist. A portable script may not assume GNU sed.
+DIRS=$(sed -n 's/^DIR[[:blank:]]*\([^[:blank:]]*\)[[:blank:]]*<=[[:blank:]]*\(.*[^[:blank:]]\)[[:blank:]]*$/\1|\2/p' "$map")
+
+while IFS='|' read -r dest src; do
+  [ -n "$dest" ] || continue
+  if [ ! -d "$root/$src" ]; then
+    echo "build-package: package.map names $src, which does not exist" >&2
+    exit 1
+  fi
+  mkdir -p "$pkg/$(dirname "$dest")"
+  cp -R "$root/$src" "$pkg/$dest"
+
+  # Does this example's product arrive as an IMAGE -- a disk or a tape? The answer decides
+  # both of the rules below, so ask it once, before anything is stripped.
+  image=no
+  if ls "$pkg/$dest"/*.dsk "$pkg/$dest"/*.DSK "$pkg/$dest"/*.tap "$pkg/$dest"/*.TAP 2>/dev/null | head -1 | grep -q .; then
+    image=yes
+  fi
+
+  # The vendor ReadMes, OUR OWN per-directory README.md, and the scripts that BUILD media are
+  # all repository artifacts, and none of them belong in the zip.
+  #
+  # The README.md especially. It is the SOURCE -- written for someone standing in the tree, it
+  # talks about .gitignore and about which files are "not in this repository", and it is raw
+  # Markdown that a file manager cannot render. So the .md is stripped. What DOES ship is its
+  # rendered sibling, README.pdf (tools/build-docs.sh builds one beside every examples README):
+  # a reader-facing PDF that looks like the rest of the docs and that a package holder can open
+  # without a Markdown viewer. Do NOT add README.pdf to this rm -- it ships on purpose.
+  # ...and the same rule takes out SOURCE, which is the other thing that is not product: an
+  # example ships its media (a tape, a disk), not the ENTER script the tape was derived from nor
+  # the script that derives it. Both stay in the repository (docs/sources.md has the provenance).
+  rm -f "$pkg/$dest"/README.md "$pkg/$dest"/-ReadMe.pdf \
+        "$pkg/$dest"/*.ENT "$pkg/$dest"/make-*.sh 2>/dev/null || true
+
+  # The assembler files are the CONDITIONAL half, and the condition is what the example's
+  # product IS. Beside a disk or a tape, a .ASM and its .PRN listing are how that image was
+  # made -- provenance, exactly like the .ENT and the make-*.sh above, and they stay in the
+  # repository. In an example that ships no image they ARE the product: examples/debugger
+  # hands you HELLO.ASM to read and HELLO.PRN for `SYMBOLS LOAD HELLO.PRN` to open, which is
+  # the first command of its walkthrough, so a zip that stripped them would ship an example
+  # whose own README fails on line one.
+  if [ "$image" = yes ]; then
+    rm -f "$pkg/$dest"/*.ASM "$pkg/$dest"/*.PRN 2>/dev/null || true
+  fi
+
+  # Did any actual MEDIA come with it? An image, or -- for an example whose product is a
+  # PROGRAM rather than a disk -- the Intel HEX the machine loads. This is a presence check,
+  # not a completeness one: it catches a directory that arrived carrying nothing, and it
+  # cannot notice that one image of two went missing. What notices that is the acceptance
+  # suite, which boots every shipped example WITH its media (tests/acceptance/examples.cmake,
+  # plus trek80.exp and diskbasic.exp) and goes red the moment a file it mounts is absent.
+  if [ "$image" = no ] &&
+     ! ls "$pkg/$dest"/*.hex "$pkg/$dest"/*.HEX 2>/dev/null | head -1 | grep -q .; then
+    echo "  !! $dest has a machine file and NO MEDIA" >&2
+    missing="$missing $dest"
+  fi
+done <<EOF
+$DIRS
+EOF
+
+# EVERY shipped example's media is TRACKED (.gitignore names each one), so an empty example
+# directory is not "you have not fetched the optional images yet" -- it is a file that should
+# be in your tree and is not. The zip would boot to a dead prompt and look like our bug, which
+# is the thing the header promises this script will never quietly do. So it is fatal, and it
+# is fatal BEFORE the zip exists: refusing to build beats building an archive we have just
+# finished calling broken.
+if [ -n "$missing" ]; then
+  echo >&2
+  echo "build-package: NOT PACKAGED -- these ship media that is missing from your tree:" >&2
+  for d in $missing; do echo "    $d" >&2; done
+  echo "Each one is tracked; restore it with: git checkout -- examples/" >&2
+  exit 1
+fi
+
+name=swtpcsim-$ver-$target
+archive=$out/$name.$ext
+
+echo
+echo "build-package: staged $pkg"
+
+# tar.gz everywhere but Windows. The Windows .zip is where the footguns are, and building one
+# on the Win10 guest (2026-07-21) sprang every one:
+#
+#   * Git Bash ships NO Info-ZIP `zip`.
+#   * Its `tar` is GNU tar (/usr/bin/tar), which CANNOT write zip -- `--format zip` is an
+#     "Invalid archive format" and `-a -cf x.zip` yields a file `unzip` will not read. So the
+#     old `tar --version | grep bsdtar` branch never fired here (bare tar is GNU tar), and had
+#     it fired it would have run the wrong tar.
+#   * PowerShell 5.1 -- what Windows 10 ships -- Compress-Archive writes BACKSLASH path
+#     separators. The listing looks right and `unzip -t` passes, but actual extraction on any
+#     Unix `unzip` FAILS ("appears to use backslashes as path separators"). PowerShell 7 fixed
+#     it; the release box has 5.1.
+#
+# What DOES emit a conformant, forward-slash zip is bsdtar (libarchive) with `--format zip`.
+# It ships in every Windows 10 1803+ as %SystemRoot%\System32\tar.exe -- absent only from Git
+# Bash's PATH, where GNU tar shadows it. So find a REAL bsdtar (bare `tar` already is one on
+# macOS; on Windows reach System32\tar.exe by absolute path) and prefer it. Compress-Archive
+# stays as a last resort, but WARNS, because its output may not open off Windows.
+if [ "$ext" = "zip" ]; then
+  bsdtar=""
+  if tar --version 2>/dev/null | grep -qi bsdtar; then
+    bsdtar=tar
+  else
+    # Git Bash's GNU tar cannot zip; reach the Windows-native bsdtar by absolute path.
+    for t in "$(cygpath -u "${SYSTEMROOT:-}" 2>/dev/null)/System32/tar.exe" \
+             /c/Windows/System32/tar.exe; do
+      if [ -x "$t" ] && "$t" --version 2>/dev/null | grep -qi bsdtar; then
+        bsdtar=$t
+        break
+      fi
+    done
+  fi
+
+  if command -v zip > /dev/null 2>&1; then
+    ( cd "$out" && zip -qr "$name.zip" "$name" )
+  elif [ -n "$bsdtar" ]; then
+    ( cd "$out" && "$bsdtar" --format zip -cf "$name.zip" "$name" )
+  elif command -v powershell.exe > /dev/null 2>&1; then
+    echo "build-package: WARNING -- no Info-ZIP zip and no bsdtar; using Compress-Archive." >&2
+    echo "  Windows PowerShell 5.1 writes BACKSLASH separators that Unix \`unzip\` cannot" >&2
+    echo "  extract. VERIFY this archive unpacks on a non-Windows box before shipping it." >&2
+    ( cd "$out" && powershell.exe -NoProfile -Command \
+        "Compress-Archive -Path '$name' -DestinationPath '$name.zip' -Force" )
+  else
+    echo "build-package: no zip, no bsdtar, no powershell.exe -- cannot make a .zip" >&2
+    exit 1
+  fi
+else
+  ( cd "$out" && tar czf "$name.tar.gz" "$name" )
+fi
+
+[ -f "$archive" ] || { echo "build-package: $archive was not created" >&2; exit 1; }
+
+echo "build-package: $archive"
+echo
+# POINT AT THE ARCHIVE, NOT THE STAGING DIRECTORY. This message used to name $pkg, which is
+# the copy that is NOT shipped -- and being told to cd into it is how a stale build gets
+# mistaken for the release. The archive is the artifact; prove that.
+echo "Now prove it, from OUTSIDE the repository -- somewhere \`git rev-parse\` FAILS:"
+case $ext in
+  tar.gz) echo "    tar xzf $archive -C /tmp && cd /tmp/$name" ;;
+  zip)    echo "    unzip $archive -d /tmp && cd /tmp/$name" ;;
+esac
+# Name the binary the reader actually has: swtpcsim.exe on Windows, swtpcsim elsewhere.
+# A runbook that says ./swtpcsim on a machine holding swtpcsim.exe reads as a broken package.
+echo "    ./$(basename "$sim") --version                            # a bare 'swtpcsim $ver'"
+echo "    ./$(basename "$sim") examples/flex/flex2-40.toml         # SWTBUG \$; D boots FLEX to +++"

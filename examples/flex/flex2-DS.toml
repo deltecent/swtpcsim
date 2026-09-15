@@ -1,0 +1,67 @@
+# Boot FLEX 2.0 from FLEX2-DS.DSK on the SWTPC 6800 (SWTBUG monitor + MP-S console + DC-4 floppy):
+#
+#     swtpcsim examples/swtpc/flex/FLEX2-DS.toml
+#     $ (SWTBUG prompt)
+#     D                       (SWTBUG disk boot -> FLEX signon and its +++ prompt)
+#
+# FLEX2-DS.DSK is a 40-track double-sided image (200K). The DC-4 board probes the geometry from the
+# image size, so nothing here configures tracks/sides. Drive 0 is mounted READ-ONLY so
+# looking around FLEX can never dirty the image; drop writeprotect to save files back.
+#
+# This is the shipped machines/swtpc.toml with the disk mounted -- see that file for why
+# each board and address is what it is.
+
+[machine]
+name    = "flex2-ds"
+startup = ["RESET", "RUN"]
+
+[[board]]
+type     = "6800"
+id       = "cpu0"
+clock_hz = 0
+
+[[board]]
+type = "mps"
+id   = "mps0"
+base = 8004
+
+  [board.unit.tty]
+  connect = "console"
+  baud    = 9600
+
+[[board]]
+type   = "dc4"
+id     = "dc40"
+base   = 8018
+drives = 4
+
+  [[board.drive]]
+  unit         = 0
+  mount        = "FLEX2-DS.DSK"
+  writeprotect = true
+
+[[board]]
+type = "memory"
+id   = "mem0"
+fill = "random"
+
+  [[board.region]]
+  type = "ram"
+  at   = 0000
+  size = "32K"
+
+  [[board.region]]
+  type = "ram"
+  at   = A000
+  size = "8K"
+
+  [[board.region]]
+  type  = "rom"
+  at    = E000
+  mount = "builtin:swtbug"
+
+  [[board.region]]
+  type     = "rom"
+  at       = FC00
+  mount    = "builtin:swtbug"
+  relocate = true

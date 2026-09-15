@@ -1,0 +1,103 @@
+# The SWTPC 6800 -- Southwest Technical Products' 1975 computer, the machine this simulator is named for.
+#
+#     swtpcsim swtpc
+#
+#     $
+#
+# That lone `$` is the SWTBUG monitor's prompt (v1.0, the 1977 MIKBUG replacement). On
+# reset the monitor master-resets the console ACIA, prints CR/LF and a `$`, and waits
+# for a command. Its command set is one letter each:
+#
+#     M addr    examine/change memory       G         go (resume)
+#     L         load a Motorola S-record    R         display registers
+#     P / E     breakpoint control          J addr    jump
+#
+# WHY IT IS A 6800 AND NOT AN 8080. The 6800 is big-endian and MEMORY-MAPPED -- there is
+# no IN/OUT port space. The SS-30 I/O window is 8000-801F (eight slots of four); the
+# console 6850 answers at ADDRESSES 8004/8005 (slot 1), not ports. That is what the
+# `mps` board provides; the `6800` CPU board itself decodes nothing.
+#
+# Like every file in here, this is not a set of choices: it is what the ROM requires,
+# and the source it requires it in is roms/SWTBUG/SWTBUG.ASM.
+
+[machine]
+name = "swtpc"
+
+# A monitor in ROM runs the moment the machine is switched on (DESIGN.md 10.0). The
+# 6800's restart is its reset vector: POWER ON arms the FFFE/FFFF fetch, and the first
+# instruction RUN executes loads PC from it. No address is given to RUN because the 6800
+# does not start at 0 -- the vector decides (here -> E0D0, SWTBUG's RESET entry).
+startup = ["RESET", "RUN"]
+
+[[board]]
+type     = "6800"
+id       = "cpu0"
+clock_hz = 0                  # flat out (the default); `SET cpu0 clock_hz=1000000` for a real 1 MHz part
+
+# The MP-S serial console: a single 6850 ACIA on SS-30 slot 1, control/status at 8004
+# and Rx/Tx data at 8005 -- the addresses SWTBUG's terminal routines are hardwired to.
+[[board]]
+type = "mps"
+id   = "mps0"
+base = 8004                   # SS-30 slot 1 (8000 + 4*1), the console slot
+
+  [board.unit.tty]
+  connect = "console"
+  baud    = 9600
+
+# The DC-4 floppy controller: a WD179x (1 MHz) on SS-30 slots 5+6. FLEX 2.0/3.0 boots
+# from a disk here via SWTBUG's `D` command, which selects drive 0, reads the boot sector
+# of track 0 into $2400 and jumps there (SWTBUG.ASM: DISK, at $8014/$8018). No disk is
+# mounted by default -- MOUNT one, then boot it:
+#
+#     swtpcsim swtpc
+#     $ (SWTBUG prompt)
+#     MOUNT dc40 drive0 examples/flex/FLEX2-40.DSK
+#     D                       (SWTBUG disk boot -> FLEX signon and its + prompt)
+#
+# The drive/side select latch is at $8014 (D0-D1 drive, D6 side) and the WD179x registers
+# at $8018-$801B -- the two addresses SWTBUG and the FLEX driver (roms/SWTPC/EDSKDRV.ASM)
+# are hardwired to.
+[[board]]
+type    = "dc4"
+id      = "dc40"
+base    = 8018                # WD179x block; the drive-select latch sits at 8014
+drives  = 4
+
+[[board]]
+type = "memory"
+id   = "mem0"
+fill = "random"               # real static RAM does not come up zeroed
+
+  # General RAM, 32K low in the map (0000-7FFF), clear of the SS-30 I/O window at 8000.
+  [[board.region]]
+  type = "ram"
+  at   = 0000
+  size = "32K"
+
+  # RAM at A000-BFFF (8K). Its first 128 bytes (A000-A07F) are SWTBUG's scratchpad --
+  # where the monitor keeps its variables and stack (SWTBUG.ASM: ORG $A000, STACK at
+  # $A042); on the real machine that is the MC6810 RAM on the MP-A CPU board. The rest is
+  # where FLEX loads its resident system (A000-BFFF): a FLEX machine adds a memory board
+  # covering this range, so `swtpcsim swtpc` can boot FLEX from the dc4 (see above) as-is.
+  [[board.region]]
+  type = "ram"
+  at   = A000
+  size = "8K"
+
+  # The SWTBUG monitor: a 1K 2716 at E000-E3FF, where its S-records self-place. The
+  # reset/interrupt vectors live in-ROM at E3F8-E3FF (SWTBUG.ASM: ORG $E3F8).
+  [[board.region]]
+  type  = "rom"
+  at    = E000
+  mount = "builtin:swtbug"
+
+  # The SAME chip, mirror-decoded to the top of memory. On the real board the 1K ROM is
+  # decoded across the top 8K, so the 6800's FFF8-FFFF vector fetch reads the vectors the
+  # chip stores at E3F8-E3FF. `relocate = true` moves the image so its first record lands
+  # at FC00 (FC00 + 0x3F8 = FFF8), rather than requiring it to self-place there.
+  [[board.region]]
+  type     = "rom"
+  at       = FC00
+  mount    = "builtin:swtbug"
+  relocate = true

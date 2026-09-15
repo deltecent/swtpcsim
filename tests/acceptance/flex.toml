@@ -1,0 +1,63 @@
+# FLEX 2.0 boot acceptance fixture: the shipped `swtpc` machine (SWTBUG monitor + MP-S
+# console + DC-4 floppy) with the SWTPC FLEX 2.0 master in drive 0, mounted READ-ONLY so the
+# test can never dirty the tracked image (flex.exp shasums the disk to prove it). The shipped
+# machine (machines/swtpc.toml) mounts nothing -- this is the test's fixture, not the machine.
+#
+# The boot is SWTBUG's `D` command: it selects drive 0, reads track 0 sector 1 into $2400 and
+# jumps there; the FLEX cold-start loader pulls the resident system into $A000-$BFFF, signs
+# on, asks the date, and drops to the `+++` prompt. See flex.exp for the console sequence.
+
+[machine]
+name    = "flex-acceptance"
+startup = ["RESET", "RUN"]
+
+[[board]]
+type     = "6800"
+id       = "cpu0"
+clock_hz = 0
+
+[[board]]
+type = "mps"
+id   = "mps0"
+base = 8004
+
+  [board.unit.tty]
+  connect = "console"
+  baud    = 9600
+
+[[board]]
+type   = "dc4"
+id     = "dc40"
+base   = 8018
+drives = 4
+
+  [[board.drive]]
+  unit         = 0
+  mount        = "../../examples/flex/FLEX2-40.DSK"
+  writeprotect = true
+
+[[board]]
+type = "memory"
+id   = "mem0"
+fill = "random"
+
+  [[board.region]]
+  type = "ram"
+  at   = 0000
+  size = "32K"
+
+  [[board.region]]
+  type = "ram"
+  at   = A000
+  size = "8K"
+
+  [[board.region]]
+  type  = "rom"
+  at    = E000
+  mount = "builtin:swtbug"
+
+  [[board.region]]
+  type     = "rom"
+  at       = FC00
+  mount    = "builtin:swtbug"
+  relocate = true

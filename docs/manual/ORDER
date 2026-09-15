@@ -1,0 +1,48 @@
+# The User Manual, in order. THIS IS THE ONLY PLACE THE ORDER IS DECLARED.
+#
+# The chapter files are deliberately not numbered. `07-configuring.md` looks tidy right up
+# to the morning you insert a chapter at 04 and rename eleven files, breaking every
+# cross-link in the document and every link anyone ever made to it. The sequence is data,
+# so it lives in a file, and the build reads it.
+#
+# Anything under ref/ is GENERATED from the binary. Do not edit those by hand; run
+# `cmake --build build --target docs-reference`.
+
+introduction.md
+
+# The release notes are NOT here. They used to be a chapter (whats-new.md), but a document
+# that describes the program AS IT IS ages badly with a chapter that describes what CHANGED --
+# by 0.4.0 the manual carries three of them. So the notes ship as their own document now,
+# docs/changelog/ -> swtpcsim-changelog.pdf, beside the manual in the package. (2026-07-21.)
+package.md
+running.md
+quick-start.md
+
+# The cheat sheet sits here on purpose -- BEFORE the detail. It is the page you keep open
+# on a second screen, and a reader who only ever reads to here can still drive the machine.
+ref/cheatsheet.md
+
+# The monitor and the debugger USED TO BE HERE (monitor.md, debugging.md). They moved to
+# their own shipped documents on 2026-08-22 -- docs/monitor/ -> swtpcsim-monitor.pdf and
+# docs/debugger/ -> swtpcsim-debugger.pdf -- because they describe driving swtpcsim itself,
+# not the emulated hardware this manual is about, and together they were the longest thing in
+# the book. They travel beside the manual in the package; README.md points at them.
+
+# The detail.
+machines.md
+configuring.md
+boards.md
+disks.md
+tapes.md
+serial.md
+examples.md
+mcp.md
+troubleshooting.md
+glossary.md
+
+# The reference, at the back where a reference belongs. The command reference used to live
+# here too (ref/commands.md); it moved to the Monitor document on 2026-08-23, because it
+# describes the swtpcsim> prompt -- not the emulated hardware this manual is about -- and
+# so it belongs beside monitor.md, the same reasoning that moved that chapter out.
+ref/boards.md
+ref/machines.md

@@ -1,0 +1,30 @@
+#pragma once
+//
+// MCP server (DESIGN.md 11).
+//
+// MCP IS A FIRST-CLASS INTERFACE, NOT A WRAPPER. It does not shell out to the
+// monitor and it does not screen-scrape: it sits on the same Machine and the
+// same Board::properties() the CLI does, so the two cannot drift, and every
+// result is structured JSON rather than an ASCII table someone has to re-parse.
+//
+// The clearest proof of that is board_set: its input schema is GENERATED from
+// properties() at request time. A board added next year is fully agent-drivable
+// -- with correct enums, ranges and runtime-settability -- the day it lands,
+// and not one line of this file changes.
+
+#include "core/machine.h"
+
+#include <iosfwd>
+
+namespace swtpc {
+
+// stdio JSON-RPC 2.0, line-delimited.
+//
+// `mirror` (empty = off) is a `socket:PORT[?ro]` spec: when set, the console the
+// interactive tools drive is wrapped in a MirrorStream, so a human can `telnet` in to
+// WATCH the session the assistant is running and TYPE back onto the line to take over
+// (issue #381). The assistant still feed()/out()s the inner scripted line unchanged --
+// the wrapper is transparent to the run loop.
+int runMcp(Machine& m, std::istream& in, std::ostream& out, const std::string& mirror = "");
+
+} // namespace swtpc

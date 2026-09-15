@@ -1,0 +1,88 @@
+#!/usr/bin/expect -f
+#
+# FLEX 2.0 BOOTS off a DC-4 -- the whole SWTPC 6800 disk stack, end to end. SWTBUG's `D`
+# command selects drive 0, reads track 0 sector 1 into $2400 and jumps there; the FLEX cold
+# loader pulls the resident system into $A000-$BFFF, signs on, asks the date, and drops to
+# its `+++` prompt. Typing CAT and getting the directory back is the WD179x read path, the
+# drive-select latch, the sector-0 boot coercion, and the FLEX filesystem all working at
+# once -- nothing a unit test can stand in for (test_swtpc_dc4 tests the board in isolation).
+#
+# IT HAS TO BE AN EXPECT TEST, not a pipe: the console read is polled, so a keystroke only
+# lands if the guest is sitting in its read loop, and only a tty paces bytes to the emulated
+# 9600 baud. So: WAIT FOR EACH PROMPT IN FULL before sending the next line -- the trailing
+# space of the DATE prompt is deliberate, it means the prompt finished printing.
+#
+# THE DISK MUST NOT MOVE. The fixture mounts it write-protected; shasummed before and after.
+#
+# usage: expect -f flex.exp <swtpcsim>
+#
+set timeout 60
+log_user 0
+
+set exe [lindex $argv 0]
+set dsk "examples/flex/FLEX2-40.DSK"
+
+set before [exec shasum $dsk]
+
+spawn $exe tests/acceptance/flex.toml
+
+# SWTBUG comes up on reset and prints its `$` prompt.
+expect {
+    -ex {$} {}
+    eof     { puts "FAIL: the machine did not start -- see the error above"; exit 1 }
+    timeout { puts "FAIL: SWTBUG never reached its `$` prompt"; exit 1 }
+}
+
+# DISK-BOOT FLEX. `D` is a single-letter SWTBUG command -- no CR. The loader runs and FLEX
+# signs on with its version and the date prompt.
+send "D"
+expect {
+    -ex "FLEX 2.0" {}
+    eof     { puts "FAIL: the machine died booting FLEX"; exit 1 }
+    timeout { puts "FAIL: FLEX never signed on -- the DC-4 boot did not load the system"; exit 1 }
+}
+expect {
+    -ex "DATE (MM,DD,YY)? " {}
+    eof     { puts "FAIL: FLEX signed on but died before the date prompt"; exit 1 }
+    timeout { puts "FAIL: FLEX signed on but never asked the date"; exit 1 }
+}
+
+# Answer the date; FLEX drops to its `+++` command prompt.
+send "1,15,80\r"
+expect {
+    -ex "+++" {}
+    eof     { puts "FAIL: FLEX died taking the date"; exit 1 }
+    timeout { puts "FAIL: FLEX took the date but never reached its `+++` prompt"; exit 1 }
+}
+
+# CAT reads the directory off the disk -- the WD179x read path, sector by sector.
+send "CAT\r"
+expect {
+    -ex "CATALOG OF DRIVE NUMBER 0" {}
+    eof     { puts "FAIL: the machine died running CAT"; exit 1 }
+    timeout { puts "FAIL: CAT produced no catalog -- the directory read failed"; exit 1 }
+}
+expect {
+    -ex "SECTORS LEFT" {}
+    eof     { puts "FAIL: CAT started the catalog but died mid-listing"; exit 1 }
+    timeout { puts "FAIL: CAT listed files but never finished (no free-space line)"; exit 1 }
+}
+
+# ...and CAT returned to the prompt.
+expect {
+    -ex "+++" {}
+    eof     { puts "FAIL: CAT listed the directory but the console did not return to `+++`"; exit 1 }
+    timeout { puts "FAIL: CAT listed the directory but never came back to `+++`"; exit 1 }
+}
+
+set after [exec shasum $dsk]
+if {$before ne $after} {
+    puts "FAIL: THE IMAGE CHANGED. `writeprotect` did not protect the master:"
+    puts "  before: $before"
+    puts "  after:  $after"
+    exit 1
+}
+
+puts "OK: FLEX 2.0 cold-booted off the DC-4 to its +++ prompt, CAT listed the directory off\
+      the disk, and the master is byte-identical."
+exit 0

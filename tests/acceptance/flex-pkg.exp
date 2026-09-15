@@ -1,0 +1,70 @@
+#!/usr/bin/expect -f
+#
+# FLEX 2.0 boots off the PACKAGED example -- `examples/flex/flex2-40.toml`.
+#
+# This is the package-verification twin of flex.exp. flex.exp boots the write-protected
+# FIXTURE (tests/acceptance/flex.toml) and shasums the master to prove the mount never
+# wrote; that fixture is not in a release package. verify-package.sh runs THIS driver
+# against the shipped example instead, from inside the extracted archive, to prove the
+# manual's `$ swtpcsim examples/flex/flex2-40.toml` (docs/manual/examples.md) actually
+# boots FLEX in the package a user downloads. No shasum here: the archive is extracted to
+# a scratch dir, so a write to its disk harms nothing.
+#
+# WHY A PTY, NOT A PIPE (see flex.exp): the console read is polled, so a keystroke only
+# lands while the guest sits in its read loop, and only a tty paces bytes to the emulated
+# 9600 baud. WAIT FOR EACH PROMPT IN FULL before sending the next line.
+#
+# usage: expect -f flex-pkg.exp <swtpcsim> [<machine file>]   (run from the package root)
+
+set timeout 60
+log_user 0
+
+set exe  [lindex $argv 0]
+set toml [lindex $argv 1]
+if {$toml eq ""} { set toml "examples/flex/flex2-40.toml" }
+
+spawn $exe $toml
+
+# SWTBUG comes up on reset and prints its `$` prompt.
+expect {
+    -ex {$} {}
+    eof     { puts "FAIL: the machine did not start -- see the error above"; exit 1 }
+    timeout { puts "FAIL: SWTBUG never reached its `$` prompt"; exit 1 }
+}
+
+# DISK-BOOT FLEX. `D` is a single-letter SWTBUG command -- no CR.
+send "D"
+expect {
+    -ex "FLEX 2.0" {}
+    eof     { puts "FAIL: the machine died booting FLEX"; exit 1 }
+    timeout { puts "FAIL: FLEX never signed on -- the DC-4 boot did not load the system"; exit 1 }
+}
+expect {
+    -ex "DATE (MM,DD,YY)? " {}
+    eof     { puts "FAIL: FLEX signed on but died before the date prompt"; exit 1 }
+    timeout { puts "FAIL: FLEX signed on but never asked the date"; exit 1 }
+}
+
+# Answer the date; FLEX drops to its `+++` command prompt.
+send "1,15,80\r"
+expect {
+    -ex "+++" {}
+    eof     { puts "FAIL: FLEX died taking the date"; exit 1 }
+    timeout { puts "FAIL: FLEX took the date but never reached its `+++` prompt"; exit 1 }
+}
+
+# CAT reads the directory off the disk -- the WD179x read path, sector by sector.
+send "CAT\r"
+expect {
+    -ex "CATALOG OF DRIVE NUMBER 0" {}
+    eof     { puts "FAIL: the machine died running CAT"; exit 1 }
+    timeout { puts "FAIL: CAT produced no catalog -- the directory read failed"; exit 1 }
+}
+expect {
+    -ex "+++" {}
+    eof     { puts "FAIL: CAT listed the directory but the console did not return to `+++`"; exit 1 }
+    timeout { puts "FAIL: CAT listed the directory but never came back to `+++`"; exit 1 }
+}
+
+puts "OK: FLEX 2.0 cold-booted off the packaged example to its +++ prompt and CAT listed the directory."
+exit 0

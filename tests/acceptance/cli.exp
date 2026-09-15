@@ -1,0 +1,201 @@
+#!/usr/bin/expect -f
+#
+# THE INTERACTIVE CLI SMOKE TEST -- the simulator driven through a REAL TERMINAL.
+#
+# Every other test in this suite drives the CLI through a pipe (`-s script`), and a pipe is
+# not a terminal. Three things only exist on a tty and are therefore untested by all of
+# them: line editing and the echoed prompt, ATTN (^E) handing the console back from the
+# guest, and the run loop's decision to pace -- or not to pace -- against a wall clock.
+# This test is the one that types.
+#
+# EXACT MATCHING, ALWAYS. `expect` patterns are GLOBS by default, so `expect "*"` matches
+# ANY output and `expect "  ?"` matches two spaces and ANY character. A test written that
+# way passes on a machine that is doing nothing at all -- ask me how I know. Every literal
+# below is `-ex`, and the one pattern that needs structure is `-re` and is anchored.
+#
+# Usage: expect -f tests/acceptance/cli.exp <path-to-swtpcsim>
+
+set timeout 30
+log_user 0
+
+set sim [lindex $argv 0]
+if {$sim eq ""} { puts "usage: cli.exp <swtpcsim>"; exit 2 }
+
+proc ok   {msg} { puts "ok    -- $msg" }
+proc fail {msg} { puts "FAIL  -- $msg"; puts "--- last seen ---"; puts $::expect_out(buffer); exit 1 }
+
+# A BARE 6800, WRITTEN HERE, WITH NO STARTUP -- and spawned with `-f`, never a bare $sim.
+#
+# This test is about the TTY (line editing, ATTN, the banner), not about machine selection,
+# so it needs a machine that lands STRAIGHT at the monitor prompt. The shipped `swtpc` no
+# longer is one: as of Stage 2 it has `startup = ["RESET", "RUN"]` and auto-boots SWTBUG into
+# a guest console, from which only ^E reaches the monitor -- and `-x ... -i` (check 7) would
+# never run its command, because runStartup's RUN blocks in the guest first (src/main.cpp,
+# src/cli/monitor.cpp run loop). A machine that TALKS is exercised elsewhere now (the `mps`
+# board's unit test, test_machines' swtpc boards, and a live SWTBUG boot over --mcp), so this
+# file goes back to what it has always actually needed: a CPU and RAM, at the prompt.
+#
+# `-f <file>` and not a bare command line: a bare `$sim` looks for ./swtpcsim.toml
+# (src/main.cpp), and this runs in the BUILD directory, so the day anything drops a config
+# there a bare launch would run against someone else's machine (cwdconfig.cmake tests the
+# looking). The file is written per-pid and removed at the end.
+set mf [file join [file dirname $sim] "cli-machine-[pid].toml"]
+set fh [open $mf w]
+puts $fh {# A bare 6800 for the interactive CLI test: CPU + 32K RAM, no startup.
+[machine]
+name = "clitest"
+
+[[board]]
+type = "6800"
+id   = "cpu0"
+
+[[board]]
+type = "memory"
+id   = "mem0"
+
+  [[board.region]]
+  type = "ram"
+  at   = 0000
+  size = "32K"
+}
+close $fh
+
+spawn $sim -f $mf
+
+# ---- 1. THE BANNER REPORTS THE POLICY, NOT THE DIVISOR. ----
+# The last survivor of the `clock_hz = 0` lie. The machinery, SHOW and the docs were all
+# fixed on 2026-07-13; the banner went on printing hz()/1e6 -- and hz() is a DIVISOR that is
+# never 0 (core/clock.h), so a flat-out machine could only ever say "2 MHz". Nothing asserted
+# on this string, which is exactly how it survived. It is asserted now.
+expect {
+    -ex "6800, full speed." { ok "the banner says full speed, not a rate" }
+    timeout                 { fail "the banner does not report a free-running machine" }
+}
+
+# ---- 2. It comes up, on a terminal, with a prompt. ----
+expect {
+    -ex "swtpcsim> " { ok "the monitor prompts on a tty" }
+    timeout           { fail "no prompt" }
+}
+
+# ---- 3. A command runs, and the machine describes itself. ----
+send "BOARDS\r"
+expect {
+    -ex "cpu0"  { ok "BOARDS lists the CPU card" }
+    timeout     { fail "BOARDS printed no cpu0" }
+}
+expect -ex "swtpcsim> "
+
+# ---- 3b. TAB COMPLETION and history recall -- both tty-only (DESIGN.md 10.4). ----
+# Neither exists under a pipe: getline sees no Tab and no escape sequences. Tab completes
+# a unique command prefix (BOAR -> BOARDS) and runs it; then the up-arrow recalls that same
+# line. Both are asserted by the command's own output coming back, not by the echoed line --
+# the editor repaints with escape sequences, so matching the OUTPUT is the honest check.
+send "BOAR\t\r"
+expect {
+    -ex "cpu0" { ok "Tab completed BOAR -> BOARDS and the command ran" }
+    timeout    { fail "Tab did not complete the command prefix" }
+}
+expect -ex "swtpcsim> "
+
+# ESC [ A is the up-arrow. It recalls the last line (BOARDS), and Enter re-runs it.
+send "\033\[A\r"
+expect {
+    -ex "cpu0" { ok "the up-arrow recalled the last command from history" }
+    timeout    { fail "history recall (up-arrow) did not re-run the command" }
+}
+expect -ex "swtpcsim> "
+
+# ---- 4. FLAT OUT IS THE DEFAULT (Patrick, 2026-07-13). ----
+# The crystal is a property of the CPU card, and with no crystal the run loop does not
+# sleep. This is the line that used to be a lie: `clock_hz = 0` was documented as "runs
+# flat out" while Clock::setHz coerced it back to 2 MHz and the loop paced anyway.
+send "SHOW cpu0\r"
+expect {
+    -re {clock_hz\s+0\y}  { ok "clock_hz defaults to 0 -- flat out" }
+    timeout               { fail "cpu0's clock is not 0 by default" }
+}
+expect -ex "swtpcsim> "
+
+# ---- 5. A guest that TALKS -- exercised elsewhere as of Stage 2. ----
+# The 2SIO version of this test toggled in a short 8080 program that wrote 'H' out a serial
+# port and watched it arrive on the console. This test's machine is a bare CPU + RAM with no
+# serial board, so there is nothing for a guest to talk THROUGH here. That path is covered
+# now by the shipped `swtpc`: its `mps` (MP-S) console is unit-tested (tests/test_swtpc_mps),
+# its boards are checked in test_machines, and SWTBUG boots to its `$` prompt over that
+# console under --mcp -- the 6800 analogue of the loop that used to live here, on the real
+# machine rather than a toy program.
+
+# ---- 6. ATTN (^E) -- the guest is running, and the host takes the keyboard anyway. ----
+# This is the one the scripted harness CANNOT test: under a pipe, the console reads stdin
+# eagerly and acts on ^E the instant it appears in the buffer -- so a keystroke FILE fires
+# it before the guest has even started. On a tty it arrives when a human presses it.
+#
+# A 6800 JMP-to-self is the smallest genuinely-running guest: 7E 00 20 at 0020 is `JMP 0020`,
+# an unconditional branch to itself. RUN 20 enters it and the run loop hands the tty over;
+# ^E is the only way back, and every stop says WHY it stopped.
+send "DEPOSIT 20 7E 00 20\r"
+expect -ex "swtpcsim> "
+send "RUN 20\r"
+expect {
+    -ex "running from 0020" { ok "the guest is running and the run loop took the tty" }
+    timeout                 { fail "RUN 20 never started" }
+}
+send "\005"
+# EVERY STOP SAYS WHY, and this one's reason is ATTN. Match the WORD before the
+# prompt, not the prompt alone -- a prompt would come back whatever the machine
+# claimed had happened, which is exactly the false pass this file warns about.
+expect {
+    -re {STOP -- the machine is still at 002[0-2]\.} {
+        ok "STOP (^E) took the console back, and the machine SAID so"
+    }
+    timeout { fail "^E did not return to the monitor, or it did not say why it stopped" }
+}
+expect {
+    -ex "swtpcsim> " { ok "and the monitor is taking commands again" }
+    timeout           { fail "^E did not return to the monitor" }
+}
+
+# ATTN IS NOT A STOP. The machine is exactly where we left it -- still looping at 0020.
+# The status line labels each register with its SET REG name, so the program counter is PC=.
+send "REGS\r"
+expect {
+    -re {PC=002[0-2] } { ok "STOP left the machine where it was -- still in its loop" }
+    timeout           { fail "the machine was stopped by ^E, or the PC moved somewhere odd" }
+}
+expect -ex "swtpcsim> "
+
+# ---- 6b. THE `!` SHELL ESCAPE -- a host command runs and its output comes back. ----
+# This is a tty-only round trip. The child inherits the fd behind this pty, so what it
+# prints appears here; under a pipe it would write to the real fd and never be seen. `echo`
+# is a shell builtin on every host, and the string is unmistakable so no other line matches.
+send "!echo hello-from-shell\r"
+expect {
+    -ex "hello-from-shell" { ok "! ran a command in the host shell and the output came back" }
+    timeout               { fail "the ! shell escape produced no output" }
+}
+expect -ex "swtpcsim> "
+
+send "QUIT\r"
+expect eof
+
+# ---- 7. ...AND A CRYSTAL IS STILL REPORTED AS A CRYSTAL. ----
+# The other half of check 1, and the reason it is a separate spawn: the banner prints ONCE,
+# at startup, so buying the crystal on the command line is the only way to watch it take the
+# other branch. `-i` IS LOAD-BEARING -- without it `-x` runs the command and exits before the
+# banner is ever printed (src/main.cpp: `if (ran && !interactive) return rc;`), and this check
+# would then pass by matching nothing at all.
+#
+# Without this, "full speed." could be hardcoded and check 1 would still pass -- which is the
+# same shape of bug as the one this file is here to catch: a display that no longer asks.
+spawn $sim -f $mf -x "SET cpu0 clock_hz=2000000" -i
+expect {
+    -ex "6800, 2 MHz." { ok "a card WITH a crystal still banners its rate" }
+    timeout            { fail "SET cpu0 clock_hz=2000000 did not reach the banner" }
+}
+send "QUIT\r"
+expect eof
+
+file delete $mf
+
+puts "\nALL INTERACTIVE CLI CHECKS PASSED"

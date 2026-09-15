@@ -1,0 +1,143 @@
+# Porting notes — what the prior work taught us
+
+> ## ✓ `src/platform/win32/` IS FIELD-PROVEN — SERIAL, SOCKET AND TERMINAL
+>
+> **Written 2026-07-12 on macOS, where no compiler had looked at it.** `serial_win32.cpp` (`SetCommState` / `GetCommModemStatus` / `EscapeCommFunction`), `socket_win32.cpp` (Winsock) and `terminal_win32.cpp` (`SetConsoleMode`) existed so that a Windows build **links** and so the porting work was a debugging job rather than a design job. As of **2026-07-15 all three are proved on native Windows (MSVC)** — not merely built, but driven against the real world: a real cable, the real kernel TCP stack, a real console. Each was a leg of `ctest -L hw` (the serial-hardware test has since been removed with the 8080/S-100 pruning; the socket and terminal legs remain).
+>
+> **`serial_win32.cpp` — real hardware.** Two USB FTDI ports, `COM4 <-> COM10`, null modem between them: `tests/serialtest.cpp` (since removed with the 8080/S-100 pruning; it had **25 checks** under `ctest -L hw`), both the platform-layer section and the in-machine 6850 (real `/CTS` flow control and a latched `/DCD` carrier-drop interrupt), stable across repeat runs. The spots once flagged as most-likely-wrong — `MAXDWORD/0/0` and `EscapeCommFunction` vs `RTS_CONTROL_ENABLE` — both turned out **right** and are unchanged.
+>
+> **`socket_win32.cpp` — the real TCP stack.** `tests/test_lines.cpp` drives the loopback happy path in the `unit` aggregate, and `tests/sockettest.cpp` (`ctest -L hw`, **11 checks**) drives the non-blocking connect: success out of loopback, bytes both ways, hangup, and — the one that was flagged — a **REFUSED** connect, which on Winsock surfaces in `select()`'s *except* set that POSIX ignores. `poll()` watches that third set on purpose; a refusal ends `closed()` and never once `established()`. Right as written.
+>
+> **`terminal_win32.cpp` — a real console.** The pipe path runs in CI every build (the piped acceptance tests feed a live guest keystrokes on a redirected stdin: `readInput`'s `PeekNamedPipe` branch, its never-waiting contract, and its broken-pipe EOF, which stops the run with `InputEnded`). The console path — which a piped test cannot reach — is `src/platform/win32/terminaltest_win32.cpp` (`ctest -L hw`, **15 checks**): it takes a real console and drives `enterTermMode()` through **both** modes — Guest clears line input, echo and `PROCESSED_INPUT` (Ctrl-C is a byte, not a signal); LineEdit leaves `PROCESSED_INPUT` **as it found it** (Ctrl-C still signals a way out of the prompt) — confirms `ENABLE_VIRTUAL_TERMINAL_INPUT` is set, and that `restoreTerm()` gives the mode back exactly and idempotently. That test lives in `src/platform/win32/` and not `tests/` because reading `SetConsoleMode`/`GetConsoleMode` is itself a Win32 call — §2.1 keeps OS code in the platform layer, and a test of OS-specific code is OS-specific code. The POSIX terminal has its own mirror of it, `src/platform/posix/terminaltest_posix.cpp` (**11 checks**), which opens a pty and asserts the half a piped test can never reach: on a tty an empty read is *quiet*, not *ended* — and on a closed pipe it is still *ended*. That distinction was proved by hand until issue #25 showed what by hand is worth.
+>
+> The one console thing NOT in CI is `readInput`'s peek-and-discard loop over the input queue: proving it means manufacturing keystrokes with `WriteConsoleInput` and reading them back, and that round trip is **racy** against a console input buffer shared with the parent shell — a flaky hardware test is a lying one, which is the whole reason the suite has an `-L hw` leg in the first place. It was verified by hand (feed a key-up + a resize, `readInput` returns 0 without blocking; then a real key comes through), and a broken peek loop hangs the monitor the instant you type, so it does not hide.
+
+### The §2.1 lint is ON (2026-07-12)
+
+The terminal was the **last** thing in the tree with an OS underneath it, and it has moved into `src/platform/terminal.h`. `src/cli/lineedit.cpp`'s `#if defined(_WIN32)` is gone — Windows now gets the *same* line editor from the *same* code, degrading to `std::getline` if the console cannot be put in raw mode.
+
+So `cmake/lint_platform.cmake` now runs **as a build dependency of `swtpc_core`** — not a test, because §2.1 says *fails the build*, and a rule you can merge and fix later is a rule you have already lost.
+
+It greps for OS **headers** as well as OS **macros**, and that half is not gold-plating: when the terminal moved there were two offenders, and only one had a conditional. `src/host/console.cpp` simply `#include`d `<termios.h>` in the open, with no `#ifdef` at all — a macro-only lint would have called it **clean**. It would have compiled on macOS and Linux forever and failed on Windows the day someone tried. **The `#ifdef` is the symptom; reaching for the OS outside the platform layer is the disease.**
+
+Lessons from the Python prototype (`../AltairClaude/cpm_sim`), its `SIMULATOR.md` and `CLAUDE.md`, and `mits_dsk.c`. **Read this before writing the CPU or the disk controller.**
+
+## What to steal
+
+### 1. Idle detection — this is what makes automation work
+
+A CP/M program waiting at a prompt never halts; it spins on the SIO status port forever.
+
+The prototype counts **consecutive console-status reads that return RDRF=0 with no intervening I/O**. *Any* other activity — a data read, a char write, any disk port access — resets the counter. Past a threshold (default 1000), the machine is **provably parked at a prompt and its output has settled**.
+
+Two payoffs:
+- The run loop reports `idle`, so automated builds (M80/L80) terminate promptly on error instead of burning 20M steps.
+- **The host process can sleep instead of emulating a spin loop** — which is what stops a CP/M prompt from pinning a host core.
+
+### 2. The `send` / `expect` / `screen` agent API
+
+The prototype's best idea, and the right shape for the MCP surface:
+
+- `send(text)` — queue keystrokes into the serial input buffer
+- `expect(pattern, max_steps, idle_threshold) -> (found, steps)` — run until the pattern appears in a rolling window of console output; on failure, return the tail of captured output
+- `run(max_steps, idle_threshold) -> (reason, steps)` with `reason ∈ halt | breakpoint | idle | max_steps`
+- `screen()` — a **VT100/ANSI screen emulator** so a test can assert on a *screen grid* rather than a byte stream. Essential for testing full-screen guest apps (editors).
+
+### 3. The `ESC[6n` DSR reply
+
+The prototype sniffs the output stream for a Device Status Report query and injects `ESC[<rows>;<cols>R` into the input buffer, so guest programs can discover terminal size. Keep it — but as a **`Console` property**, not a hardcoded sniff.
+
+### 4. `mits_dsk.c`'s device model
+
+Its `s100_bus_addio(port, count, handler, name)` / `s100_bus_remio(...)` shape is the right instinct, and its `DEBTAB` debug masks (`IN_MSG`, `OUT_MSG`, `READ_MSG`, `WRITE_MSG`, `SECTOR_STUCK_MSG`, `TRACK_STUCK_MSG`) are the model for the `Log`/`Trace` category masks.
+
+> **Note:** `s100_bus.h` **does not exist anywhere in the tree.** That API was aspirational. Defining it properly is the core of this project.
+
+---
+
+## What NOT to inherit
+
+### 1. The RLC/RRC sentinel bug — the reason `step()` returns a struct
+
+In the Python core, a carry-bit local named `cy` **shadowed the cycle-count variable** also named `cy`. `step()` therefore returned `0`, which the run loop interpreted as **"breakpoint hit"** — silently killing M80 and L80 after ~2.8M steps.
+
+The bug was not the shadowing. The bug was **using a sentinel return value** (`0` = breakpoint, `-1` = halt) that a plausible typo could forge.
+
+> **Therefore: `step()` returns `StepResult { uint32_t cycles; Status status; }`. Never a sentinel.**
+
+### 2. An unvalidated CPU
+
+The prototype's own notes say `DAA` is "complex, not fully tested" and that **TST8080 / 8080PRE / 8080EXM / CPUTEST were never run** — with the comment "These MUST be run before trusting the emulator."
+
+**Validation is a hard CI gate (milestone 2), not a to-do.**
+
+> **Settled 2026-07-11.** All four suites run and pass against the C++ core — 8080EXM included, all 25 CRC groups, `<daa,cma,stc,cmc>` among them. (`tests/cputest.cpp` and the 8080 exercisers it ran were removed with the 8080/S-100 pruning; the 6800 core carries its own CPU tests.)
+
+### 3. No interrupts at all
+
+`EI`/`DI` set `self.interrupts_enabled`, and **nothing ever reads it.** There is no `interrupt()` method, no INT pin, no vector injection. This is what happens when a simulator is built polled and interrupts are "added later."
+
+**This is why a real interrupt path is in milestone 1**, driven by a board (the MP-S 6850 console) that genuinely needs it: a level on the shared IRQ line, taken through the fixed `$FFF8` vector — not a flag nothing reads.
+
+### 4. Linear-scan dispatch
+
+The prototype decodes by bit pattern in a long if/elif chain (`elif op & 0xC7 == 0x06:` …). Compact, but it is the worst performance shape available. **Use a 256-entry table or a `switch`.**
+
+### 5. A flat 64K bytearray for memory
+
+No banking, no ROM, no write protection, no PHANTOM, no board abstraction. Every address is RAM. There is nothing to reuse here.
+
+### 6. The BDOS/BIOS shims
+
+`bdos.py`, `bios.py`, `cpm.py`, `cpm_real.py` are an evolutionary dead end (the author's "real BDOS at 0xB606" investigation was a misdiagnosis — `AltairSystem` boots the same real CP/M binary and runs M80/L80 fine). **Do not port them.** Boot real CP/M on the emulated 8080, as `AltairSystem` does.
+
+---
+
+## Traps that will bite you
+
+### The BIOS track-buffer flush requires CONIN
+
+The 8 MB Altair CP/M BIOS does **not** write to the DCDD when CP/M closes a file. BIOS WRITE only copies into an in-memory `trkBuf` (32 × 137 = 4,384 bytes, each slot prefixed with a status byte: 0x00 = good, 0xFF = undefined) and marks it dirty.
+
+**The actual port-0x0A write happens in `invFlush`, called from the BIOS CONIN entry** — the BIOS uses console input as its flush trigger.
+
+> **Consequence: never flush the disk image right after a CP/M file operation.** The directory update from BDOS Close sits in `trkBuf` until the next BDOS function 1. **Run back to the `A0>` prompt first.**
+
+### The DCDD's dirty-buffer write-back ordering
+
+`out08` (select), `in09` (sector read), and `out09` (step) **all flush the dirty buffer first**, in that specific order relative to invalidating the sector/byte position. Getting this wrong **silently corrupts disks**.
+
+Also: partial-sector writes (133-byte system-track sectors that never reach the full 137) must not be lost — write bytes through as they arrive.
+
+### Delay physical drive select until READ/WRITE
+
+Don't seek on select alone.
+
+### BDOS clobbers every register
+
+A, B, C, D, E, H, L — only SP is preserved. This repeatedly bit the prototype's author in guest assembly (print loops where HL went to 0, the code then read `mem[0]` = `0xC3`, and spewed garbage forever).
+
+**Always call BDOS at 0005H, never BIOS directly** — BIOS entry points have no register contract.
+
+### Guest toolchain trivia
+
+- **M80 symbols are only 6 characters significant.** The #1 gotcha.
+- `%Mult. Def. Global` is a *warning*, not an error.
+- Use `CSEG`, never `ORG 0100H`.
+- CP/M's command line is capped at 127 chars.
+
+---
+
+## Reference: the 56K CP/M memory map (binary-verified)
+
+| | |
+|---|---|
+| TPA | 0x0100 – 0xADFF |
+| CCP base | 0xAE00 |
+| BDOS base | 0xB600 (**entry 0xB606**) |
+| BIOS base | 0xC400 |
+| BIOS jump table | 0xC580 (17 × 3 bytes) |
+| BIOS cold start | 0xC47A |
+| WBOOT | 0xC4CC |
+
+The 2nd-stage boot loader is read from **track 0, sectors 1–2** (229 bytes, ORG 0), loaded to 0xAE00, then jumps to the BIOS cold start.

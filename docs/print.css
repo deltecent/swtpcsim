@@ -1,0 +1,305 @@
+/* The manual, on paper.
+ *
+ * The browser is the PDF engine (tools/build-docs.sh), so this is a PRINT stylesheet and
+ * not a web one: what matters is that a table does not get sliced in half by a page break
+ * and that a 79-column code block fits the column it is printed into.
+ */
+
+/* THE FONTS ARE EMBEDDED, AND THAT IS WHAT MAKES THE PDF REPRODUCIBLE.
+ *
+ * These used to be a wish list -- "Charter", "Georgia", "Palatino", serif -- and a wish
+ * list resolves to whatever the machine happens to own. That was survivable while one Mac
+ * built the PDFs. It stopped being survivable the moment CI started building them: none of
+ * Charter, Georgia or Palatino exists on ubuntu-latest, so CI would have re-typeset the
+ * whole manual in fallback DejaVu Serif -- different face, different pagination, different
+ * page count from every copy shipped so far -- and said nothing about it.
+ *
+ * So the document carries its own faces and the renderer stops mattering. pandoc's
+ * --embed-resources inlines these as data: URIs (it resolves the url() relative to THIS
+ * file, not the caller's cwd), and build-docs.sh then checks the FINISHED PDF and fails if
+ * any face in it is one we did not ship -- which is how a character that neither font has
+ * gets caught, instead of being quietly fetched from the build machine.
+ *
+ * The mono matters more than the serif here, not less: the listings are written to a hard
+ * 79 columns, and mono is what a code block's width is measured in. DejaVu Sans Mono was
+ * already the Linux end of the old wish list, and its advance width (0.602em) is Menlo's,
+ * so pinning it moves almost nothing and guarantees all of it.
+ *
+ * Provenance -- DejaVu is an unmodified upstream release file. XCharter is TrueType
+ * DETERMINISTICALLY CONVERTED from the upstream .otf (it ships no .ttf), because Chrome's
+ * --print-to-pdf embeds a CFF .otf as a Type 3 font whose text layer copies out garbled
+ * (issue #246); TrueType embeds as CID TrueType and copies clean. Both the source .otf and
+ * the converted .ttf hashes are recorded, and both licenses ("leave this notice intact",
+ * conversion permitted) are satisfied by carrying the text next to them. See
+ * docs/fonts/README.md.
+ */
+@font-face {
+  font-family: "XCharter";
+  font-weight: 400; font-style: normal;
+  src: url("fonts/XCharter-Roman.ttf") format("truetype");
+}
+@font-face {
+  font-family: "XCharter";
+  font-weight: 700; font-style: normal;
+  src: url("fonts/XCharter-Bold.ttf") format("truetype");
+}
+@font-face {
+  font-family: "XCharter";
+  font-weight: 400; font-style: italic;
+  src: url("fonts/XCharter-Italic.ttf") format("truetype");
+}
+@font-face {
+  font-family: "XCharter";
+  font-weight: 700; font-style: italic;
+  src: url("fonts/XCharter-BoldItalic.ttf") format("truetype");
+}
+@font-face {
+  font-family: "DejaVu Sans Mono";
+  font-weight: 400; font-style: normal;
+  src: url("fonts/DejaVuSansMono.ttf") format("truetype");
+}
+@font-face {
+  font-family: "DejaVu Sans Mono";
+  font-weight: 700; font-style: normal;
+  src: url("fonts/DejaVuSansMono-Bold.ttf") format("truetype");
+}
+
+/* PAGE FURNITURE -- the running page number, and the pages that do not get one.
+ *
+ * These @page margin boxes are CSS Paged Media, which the browser's own --print-to-pdf does
+ * NOT implement. They are here because Paged.js (docs/pagedjs/) runs inside the browser before
+ * the print and provides them -- the same polyfill that resolves the table of contents' page
+ * references below. tools/build-docs.sh drives the browser over the DevTools protocol, waits
+ * for Paged.js to finish, and only then prints; see tools/chrome-print.py for why the obvious
+ * --print-to-pdf does not work here.
+ *
+ * The number is set in XCharter, which is embedded -- the finished-PDF font check
+ * (build-docs.sh) rejects any face we did not ship, and a margin box drawn in the browser's
+ * default font would trip it. */
+@page {
+  size: letter;
+  margin: 22mm 18mm;
+  @bottom-center {
+    content: counter(page);
+    font-family: "XCharter", serif;
+    font-size: 9pt;
+    color: #555;
+    /* Sit the number in the bottom margin, clear of the last line of text. */
+    vertical-align: top;
+    padding-top: 4mm;
+  }
+}
+
+/* The cover and the contents are front matter: they carry no page number. The body's numbering
+ * starts at 1 on the first chapter (counter reset below), so the reader's "page 12" is the
+ * twelfth page of the manual proper, not of the PDF file. */
+@page cover      { @bottom-center { content: none; } }
+@page frontmatter { @bottom-center { content: none; } }
+
+html { font-size: 11pt; }
+
+body {
+  /* DejaVu Sans Mono is here as the GLYPH fallback, not as a typeface choice -- it is
+   * already embedded for the code blocks, so it costs nothing, and it covers what a text
+   * face does not. XCharter-Bold and XCharter-Italic have no arrow (U+2192), and the
+   * manual writes `> **On the wire -> HEX**` in bold; without this the arrow alone was
+   * fetched from macOS's Lucida Grande, which is both unshippable and absent on the CI
+   * runner. An arrow set in mono next to Charter is indistinguishable; an arrow set in
+   * whatever the build machine had lying around is the bug this file exists to prevent.
+   *
+   * The trailing serif must never fire. build-docs.sh fails the build if any face outside
+   * this list reaches the PDF, and pandoc hard-errors if XCharter itself cannot be read. */
+  font-family: "XCharter", "DejaVu Sans Mono", serif;
+  line-height: 1.45;
+  color: #111;
+  max-width: 42em;
+  margin: 0 auto;
+  /* Never leave a single line of a paragraph alone at the top or foot of a page --
+   * carry at least two lines across the break, so a broken paragraph reads as one. */
+  orphans: 2;
+  widows: 2;
+}
+
+/* Chapters start on a new page. Every chapter file begins with a single H1. */
+h1 {
+  font-size: 1.9em;
+  line-height: 1.2;
+  margin-top: 0;
+  padding-top: 0.2em;
+  border-bottom: 2px solid #111;
+  break-before: page;
+}
+h1:first-of-type { break-before: avoid; }
+
+h2 { font-size: 1.35em; margin-top: 1.8em; }
+h3 { font-size: 1.1em;  margin-top: 1.5em; }
+
+/* A heading stranded at the foot of a page is the classic print bug. */
+h1, h2, h3, h4 { break-after: avoid; }
+
+/* ...but break-after:avoid only glues a heading to the ONE block below it. A section like
+ * "Monitor commands" is heading -> lead-in paragraph -> table, and with the table set to
+ * break-inside:avoid the browser floats the whole table to the next page and strands the
+ * heading (and its paragraph) at the foot of this one. Glue the chain: the paragraph right
+ * under a heading, and a table right under that paragraph or under the heading itself,
+ * refuse a page break before them -- so the heading always leads its table onto the page.
+ *
+ * An EXAMPLE (a <pre> code block) is the same shape: heading -> lead-in sentence -> the
+ * command to type. Glue it too, so "here is how you boot CP/M:" never sits at the foot of
+ * one page with the block it introduces at the head of the next. (pre already has
+ * break-inside:avoid, so the block itself stays whole; this keeps its lead-in with it.) */
+h1 + p, h2 + p, h3 + p, h4 + p,
+h1 + table, h2 + table, h3 + table, h4 + table,
+h1 + pre, h2 + pre, h3 + pre, h4 + pre,
+p + table, p + pre { break-before: avoid; }
+
+/* Code is where the reader's hands go, so it gets the room. Period listings and terminal
+ * transcripts are written to 79 columns; anything wider is a table pretending to be code. */
+code, pre {
+  font-family: "DejaVu Sans Mono", monospace;
+  font-size: 0.82em;
+}
+
+pre {
+  background: #f6f6f4;
+  border-left: 3px solid #bbb;
+  padding: 0.7em 0.9em;
+  overflow-x: auto;       /* on screen */
+  white-space: pre-wrap;  /* on paper: a transcript must never be silently cropped */
+  word-break: break-word;
+  break-inside: avoid;
+}
+
+code { background: #f0f0ee; padding: 0.1em 0.3em; border-radius: 2px; }
+pre code { background: none; padding: 0; }
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 1em 0;
+  font-size: 0.86em;
+  break-inside: avoid;   /* a parameter table cut across a page is unreadable */
+}
+/* ...but break-inside:avoid can only be honoured while the table FITS on a page. The long
+ * ones -- Monitor commands, the endpoint list -- are taller than the page and MUST break,
+ * and when they did a row could be sliced down the middle, stranding half a cell on the
+ * next page (SEA[RCH] did exactly this). Keep each row whole: break only BETWEEN rows.
+ * (display:table-header-group to repeat the column titles on the continuation page is the
+ * standard mechanism, but this Paged.js build does not honour it, so it is not set here --
+ * a rule that does nothing but claim to is worse than the missing header it does not fix.) */
+tr { break-inside: avoid; }
+th, td {
+  border: 1px solid #ccc;
+  padding: 0.35em 0.55em;
+  text-align: left;
+  vertical-align: top;
+}
+th { background: #f0f0ee; }
+
+blockquote {
+  margin: 1em 0;
+  padding: 0.5em 1em;
+  border-left: 3px solid #999;
+  background: #fafaf8;
+  break-inside: avoid;
+}
+
+/* THE TABLE OF CONTENTS, WITH THE PAGE EACH CHAPTER IS ON.
+ *
+ * target-counter(attr(href), page) is the whole point of adopting Paged.js: it resolves each
+ * TOC link to the page number its chapter LANDS on, so the contents finally say where to turn.
+ * The browser's own print path cannot do this (it has no target-counter), which is why a
+ * contents page that only listed chapter names was the bug TODO.md asked to fix.
+ *
+ * The dots between a title and its number are a leader, so the eye can track across. CSS has a
+ * leader() function for exactly this, but Paged.js 0.4.3 does not implement it -- and worse,
+ * an unknown function invalidates the WHOLE content value, so leader() takes the page number
+ * down with it (verified: the numbers vanish entirely). So the leader is drawn instead as a
+ * dotted bottom border on the flex-growing number box -- no leader() needed, and every browser
+ * and print path renders it. The contents is front matter: its own page carries no number
+ * (@page frontmatter above), and the body's page 1 is the first chapter. */
+#TOC {
+  page: frontmatter;
+  break-after: page;
+  counter-reset: page;          /* keep front matter out of the body's count */
+}
+#TOC ul { list-style: none; padding-left: 1em; }
+#TOC > ul { padding-left: 0; }
+#TOC li { margin: 0.4em 0; }
+#TOC a {
+  display: flex;
+  align-items: baseline;
+  border: 0;                    /* no underline: the leader is the visual connector */
+}
+#TOC a::after {
+  content: target-counter(attr(href), page);
+  flex: 1 0 auto;               /* grow to the right margin; the number rides its right end */
+  margin-left: 0.5em;
+  text-align: right;
+  border-bottom: 1px dotted #999;
+  font-variant-numeric: tabular-nums;
+}
+/* The body's page numbering starts at 1 on the first chapter -- not on the cover or the
+ * contents. The first chapter is the h1 right after the TOC (manual, devguide) or, for a
+ * document with a cover but no contents (the changelog), the h1 right after the cover. A
+ * single-file document with neither -- a README, the cheatsheet -- matches neither selector
+ * and just counts from its first page, which is what we want there too. */
+#TOC + h1,
+header#title-block-header.cover + h1 { counter-reset: page 1; }
+
+/* THE COVER -- a full first page in the feel of a period MITS manual, in swtpcsim's own words.
+ *
+ * Only the long documents raise it (build-docs.sh adds the `cover` class to the title block);
+ * a one-page example README keeps the plain centered title block below. It EVOKES the era -- a ruled
+ * technical frame, a let-spaced wordmark, a plain descriptive line -- and reproduces no MITS
+ * logo, trademark or artwork: swtpcsim names the Altair the way the rest of the manual does,
+ * to say what it simulates, and nothing more. */
+header#title-block-header { text-align: center; margin-bottom: 3em; }
+.subtitle { color: #666; font-size: 0.9em; }
+
+header#title-block-header.cover {
+  page: cover;
+  break-after: page;
+  box-sizing: border-box;
+  min-height: 232mm;            /* fill the letter page between its margins */
+  margin: 0;
+  padding: 24mm 16mm;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  border: 3px double #111;
+}
+header#title-block-header.cover h1.title {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  font-size: 3.1em;
+  line-height: 1.1;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+/* A thin rule under the wordmark, then the descriptive line, then the build stamp -- the
+ * spare, ruled look of a 1970s equipment manual's title page. */
+header#title-block-header.cover h1.title::after {
+  content: "";
+  display: block;
+  width: 60%;
+  margin: 0.7em auto 0;
+  border-bottom: 1px solid #111;
+}
+header#title-block-header.cover::after {
+  content: "A simulation of the SWTPC 6800 on the SS-50/SS-30 bus, and the MITS Altair 680b";
+  margin-top: 1.4em;
+  font-size: 1.05em;
+  font-style: italic;
+  color: #333;
+  letter-spacing: 0.02em;
+}
+header#title-block-header.cover .subtitle {
+  margin-top: 2.6em;
+  font-size: 0.85em;
+  letter-spacing: 0.03em;
+}
+
+a { color: #111; text-decoration: none; border-bottom: 1px solid #bbb; }

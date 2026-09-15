@@ -1,0 +1,46 @@
+# Learning the symbolic debugger.
+#
+#     swtpcsim examples/debugger/debugger.toml
+#
+#     swtpcsim>
+#
+# You land at the monitor prompt with an EMPTY machine: a 6800, 32K of RAM, and an MP-S
+# serial console -- no ROM, no disk, and no `startup`, so nothing runs on its own. That is
+# the point of the exercise: you load the program and drive it by hand. See this directory's
+# README.md for the walkthrough.
+#
+# Because there is no monitor ROM, there are no reset vectors and no `$` prompt inside the
+# machine -- the swtpcsim monitor IS the bus master here. You set the program counter with
+# EXAMINE, single-step with STEP, and RUN to a breakpoint; the WAI at the end of HELLO hands
+# control back to this monitor, the same way it would hand back to SWTBUG on the real board.
+
+[machine]
+name = "debugger"
+
+[[board]]
+type     = "6800"
+id       = "cpu0"
+clock_hz = 0                  # flat out
+
+# The MP-S serial console: one 6850 ACIA on SS-30 slot 1, control/status at 8004 and Rx/Tx
+# data at 8005 -- the addresses HELLO.ASM writes to send a character.
+[[board]]
+type = "mps"
+id   = "mps0"
+base = 8004
+
+  [board.unit.tty]
+  connect = "console"
+  baud    = 9600
+
+# 32K of RAM low in the map (0000-7FFF), clear of the SS-30 I/O window at 8000. HELLO
+# assembles at 0100 and its stack grows down from 013C -- all well inside this.
+[[board]]
+type = "memory"
+id   = "mem0"
+fill = "random"               # real static RAM does not come up zeroed
+
+  [[board.region]]
+  type = "ram"
+  at   = 0000
+  size = "32K"

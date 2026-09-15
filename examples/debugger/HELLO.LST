@@ -1,0 +1,43 @@
+0001                            *
+0002                            * HELLO.ASM -- a symbolic-debugger demo for swtpcsim.
+0003                            *
+0004                            * Prints "HELLO, WORLD" to the console through the SWTPC MP-S serial
+0005                            * board (a 6850 ACIA), then WAIs -- which halts the processor and hands
+0006                            * the machine back to the monitor. Assembled at $0100. Small on purpose:
+0007                            * every label, every EQU and every kind of operand is here to be looked
+0008                            * at under the debugger.
+0009                            *
+0010 8004                       ACIAS   EQU     $8004           MP-S 6850 status/control register
+0011 8005                       ACIAD   EQU     $8005           MP-S 6850 data register
+0012 0002                       TDRE    EQU     $02             status bit: transmit data register empty
+0013 000d                       CR      EQU     $0D
+0014 000a                       LF      EQU     $0A
+0015                            *
+0016 0100                               ORG     $0100
+0017                            *
+0018 0100 8e 01 3c              START   LDS     #STACK          set up a stack
+0019 0103 ce 01 1d                      LDX     #MSG            X -> the string
+0020 0106 a6 00                 LOOP    LDAA    0,X             fetch the next character
+0021 0108 27 05                         BEQ     DONE            zero terminator? -- finished
+0022 010a 8d 04                         BSR     PUTC            no -- send it
+0023 010c 08                            INX                     step to the next character
+0024 010d 20 f7                         BRA     LOOP
+0025 010f 3e                    DONE    WAI                     halt; the debugger takes over
+0026                            *
+0027                            * PUTC -- send the character in A, waiting for the transmitter first.
+0028                            *
+0029 0110 36                    PUTC    PSHA
+0030 0111 f6 80 04              PWAIT   LDAB    ACIAS           read the ACIA status
+0031 0114 c4 02                         ANDB    #TDRE           transmitter ready?
+0032 0116 27 f9                         BEQ     PWAIT           no -- keep polling
+0033 0118 32                            PULA
+0034 0119 b7 80 05                      STAA    ACIAD           yes -- send the byte
+0035 011c 39                            RTS
+0036                            *
+0037 011d 48 45 4c 4c 4f 2c 20  MSG     FCC     /HELLO, WORLD/
+          57 4f 52 4c 44
+0038 0129 0d 0a 00                      FCB     CR,LF,0
+0039 012c                               RMB     16              room for the stack to grow down into
+0040 013c                       STACK   EQU     *               top of stack (grows downward from here)
+0041                            *
+0042                                    END     START

@@ -1,0 +1,135 @@
+#include "host/tape.h"
+
+#include <chrono>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+
+namespace swtpc {
+
+// A MONOTONIC HOST CLOCK IN NANOSECONDS, the default source for a paced tape. steady_clock
+// is the right one: it never runs backwards and no NTP step can make a 300-baud byte
+// arrive early. It is read ONLY in wall-clock mode, so a full-speed tape -- and every
+// acceptance test, which runs full speed -- calls it not once and stays deterministic.
+static uint64_t steadyNs() {
+    return (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+
+TapeStream::TapeStream(TapeImage& t, Mode m, uint64_t nsPerByte, std::function<uint64_t()> hostNs)
+    : tape_(t), mode_(m), nsPerByte_(nsPerByte), hostNs_(hostNs ? std::move(hostNs) : steadyNs) {}
+
+bool TapeStream::readable() const {
+    if (mode_ != Mode::Play || tape_.atEnd() || tape_.atStop()) return false;
+    if (nsPerByte_ == 0) return true;                 // full speed: always ready
+    if (!started_) return true;                       // the first byte does not wait
+    return hostNs_() >= nextReadyNs_;                 // the rest arrive at the baud
+}
+
+bool TapeImage::read(uint8_t& b) {
+    if (atEnd() || atStop()) return false;  // the physical end, or the operator's stop mark
+    if (!media_->readAt(pos_, &b, 1)) return false;
+    ++pos_;
+    return true;
+}
+
+bool TapeImage::write(uint8_t b) {
+    if (readOnly()) return false;
+    if (!media_->writeAt(pos_, &b, 1)) return false;
+    ++pos_;
+    return true;
+}
+
+// THE MODE IS CHECKED HERE AND NOT ONLY IN readable()/writable(), because a caller
+// that asks anyway must not be able to move the head. That is the whole guarantee:
+// in PLAY nothing can advance the tape except playing it.
+size_t TapeStream::read(uint8_t* buf, size_t n) {
+    if (mode_ != Mode::Play) return 0;  // a recording deck plays nothing back
+    size_t got = 0;
+    while (got < n && tape_.read(buf[got])) ++got;
+
+    // A byte just left: set when the next one may. Advance the schedule by the byte time
+    // from where it ALREADY WAS -- an ABSOLUTE cadence -- not from `now`. The thing pulling
+    // bytes is a single-threaded run loop that keeps pausing: to pace the CPU to its
+    // crystal, and to repaint the tape counter. Each pause makes the guest a hair late to
+    // the byte that came due during it; anchoring the NEXT byte to that late `now` baked the
+    // lateness in and slipped the whole tape a little further every time. Once per pace-sleep
+    // across a nine-minute load that summed to a ~7% drag on a 2 MHz machine (issue #117).
+    // Holding the absolute mark instead lets the guest read the tiny backlog the instant it
+    // polls again, and the average baud is exactly the strap's.
+    //
+    // The exception is a gap longer than a whole byte time: that is not a stall, it is the
+    // transport having been PAUSED -- ATTN at the monitor, a breakpoint -- and resuming must
+    // not spill the backlog as a burst. So a byte that comes due more than its own interval
+    // late re-paces from now: one byte per interval from here, exactly what a dawdling loader
+    // always got (and what the "a long wait still yields ONE byte" test pins).
+    if (got && nsPerByte_) {
+        uint64_t now = hostNs_();
+        if (!started_) { nextReadyNs_ = now; started_ = true; }
+        nextReadyNs_ += nsPerByte_ * got;
+        if (now > nextReadyNs_) nextReadyNs_ = now + nsPerByte_ * got;
+    }
+    return got;  // 0 at the end of the tape: a quiet line, not an error
+}
+
+size_t TapeStream::write(const uint8_t* buf, size_t n) {
+    if (mode_ != Mode::Record) return 0;  // RECORD was never pressed
+    size_t put = 0;
+    while (put < n && tape_.write(buf[put])) ++put;
+    return put;
+}
+
+// ---------------------------------------------------------------------------
+std::string tapeTimeMMSS(double secs) {
+    if (!(secs > 0.0)) secs = 0.0;  // also catches NaN
+    long total = long(secs + 0.5);
+    long h = total / 3600, m = (total % 3600) / 60, s = total % 60;
+    char b[32];
+    if (h > 0) std::snprintf(b, sizeof b, "%ld:%02ld:%02ld", h, m, s);
+    else std::snprintf(b, sizeof b, "%02ld:%02ld", m, s);
+    return b;
+}
+
+std::string tapeCounterText(double curSecs, double totalSecs) {
+    int pct = (totalSecs > 0.0) ? int(curSecs / totalSecs * 100.0 + 0.5) : 0;
+    if (pct < 0) pct = 0;
+    if (pct > 100) pct = 100;
+    char b[80];
+    std::snprintf(b, sizeof b, "%s / %s (%d%%)", tapeTimeMMSS(curSecs).c_str(),
+                  tapeTimeMMSS(totalSecs).c_str(), pct);
+    return b;
+}
+
+bool parseTapeTime(const std::string& s, double& secs) {
+    if (s.empty()) return false;
+    // Colon form: split on ':' into 2 (MM:SS) or 3 (H:MM:SS) integer fields.
+    if (s.find(':') != std::string::npos) {
+        double parts[3];
+        int n = 0;
+        size_t i = 0;
+        while (i <= s.size() && n < 3) {
+            size_t j = s.find(':', i);
+            std::string tok = s.substr(i, j == std::string::npos ? std::string::npos : j - i);
+            if (tok.empty()) return false;
+            char* end = nullptr;
+            double v = std::strtod(tok.c_str(), &end);
+            if (end == tok.c_str() || *end != '\0' || v < 0.0) return false;
+            parts[n++] = v;
+            if (j == std::string::npos) break;
+            i = j + 1;
+        }
+        if (n == 2) secs = parts[0] * 60.0 + parts[1];
+        else if (n == 3) secs = parts[0] * 3600.0 + parts[1] * 60.0 + parts[2];
+        else return false;
+        return true;
+    }
+    // Bare seconds.
+    char* end = nullptr;
+    double v = std::strtod(s.c_str(), &end);
+    if (end == s.c_str() || *end != '\0' || v < 0.0) return false;
+    secs = v;
+    return true;
+}
+
+} // namespace swtpc

@@ -1,0 +1,216 @@
+# The MCP server
+
+```
+$ swtpcsim --mcp
+```
+
+That runs `swtpcsim` as an **MCP (Model Context Protocol) server** on stdin and stdout, so
+that an AI assistant — Claude, or anything else that speaks MCP — can drive the machine
+through **typed, structured tools** instead of screen-scraping a text terminal.
+
+It is not a wrapper, and it is not a second model of the world. **The MCP server runs on the
+same machine object as the monitor.** What the tools see is exactly what `SHOW` sees, because
+it is the same machine, answering the same questions, through a different door.
+
+## What the tools do
+
+Enough to operate the machine:
+
+- List the board types available, and every property each one has — **with its type, its
+  default and its legal range.**
+- List the boards actually in the machine.
+- Get and set any property on any board.
+- Add a board; mount a disk or a tape into it; wire a serial line to an endpoint.
+- Examine, deposit, fill, search, save and disassemble memory.
+- Run the machine, step it, set breakpoints, and read the bus flight recorder.
+- Snapshot the whole machine's state and restore it.
+
+The five you will see named are `board_types`, `board_list`, `board_get`, `board_set` and
+`board_add`. The rest follow the monitor's own vocabulary.
+
+## Driving a running guest
+
+Building a machine is half of it; the other half is **operating one that is running** —
+typing at its console and reading what it prints. Four tools do that, and they are what
+let an assistant boot FLEX, run a program, and talk to it over a serial port entirely
+through MCP:
+
+- **`run`** — advance the guest a bounded slice and return what it printed. It is the
+  expect loop in one call: pass `input` to type a line, `until` to stop when a string
+  (a prompt like `+++`) appears, `from` to set the PC first (booting is `from` the ROM
+  monitor's reset entry). It **also stops on its own when the guest reaches a prompt** — spinning on the
+  console with nothing to say — so you get control back without guessing a timeout. Every
+  stop says why in `stopped`: `match`, `idle`, `timeout`, `steps`, `halt`, `breakpoint`.
+- **`send`** — type at the console without running (then `run` to let it be read).
+- **`recv`** — drain what the guest has printed since you last looked, without running.
+- **`regs`** — the CPU registers right now.
+
+The shape of a session is therefore: `run {from: 0xE0D0, until: "$"}` to reach the SWTBUG
+monitor and `run {input: "D", until: "+++"}` to boot FLEX, then `run {input: "CAT\r", until:
+"+++"}` per command, reading the reply each time. A `run`
+**never blocks** — it advances the guest for at most `timeout_ms` (default 2000) and
+returns — so a `tools/call` always comes back, unlike a bare `RUN` through the `monitor`
+tool, which under a pipe waits on a stdin that is the JSON-RPC channel itself.
+
+By default the guest runs flat out, which is what you want for booting and for driving a
+prompt. But when a real device is on a serial line and you have set a clock speed with `SET
+cpu0 clock_hz=…`, `run` paces the guest to that clock, so a reply the device sends a fraction
+of a second later lands while the guest is still waiting for it. And with such a device on the
+line `run` will not cut a transfer off when `timeout_ms` runs out: as long as bytes are still
+arriving off the wire it keeps going, and returns only once the line has genuinely gone quiet.
+So a boot loader that reads its whole system image in over a serial disk finishes in one call.
+
+Under `--mcp` the console line is quietly re-seated onto an in-memory terminal the server
+owns (there is no host keyboard behind a pipe), which is what `send`/`run`/`recv` read and
+write. Everything else on the machine — a second serial board wired to a real port, a
+socket — keeps running and is serviced on every `run` slice, so a program shuttling bytes
+between the console and a modem port works exactly as it would at a real terminal.
+
+## Watching over your shoulder — `--mirror`
+
+Add `--mirror socket:PORT` alongside `--mcp` and a person can `telnet localhost PORT` to
+**watch the very session the assistant is driving** — every character the guest prints —
+and **type back onto the line to take over**, sharing the console:
+
+```
+$ swtpcsim swtpc --mcp --mirror socket:2323
+```
+
+It wraps the assistant's console in the same mirror the monitor offers (`<endpoint>|socket:
+PORT`, see the *Serial lines* chapter). The assistant keeps driving through `run`/`send`/
+`recv` exactly as before — the mirror is transparent to it — while whatever it types and
+whatever the guest prints also crosses the socket to the watcher. Add `?ro` to make it
+watch-only — **quote it on the command line**, because `?` is a shell wildcard:
+
+```
+$ swtpcsim swtpc --mcp --mirror 'socket:2323?ro'
+```
+
+Without the quotes the shell tries to match `socket:2323?ro` as a filename and fails
+(zsh reports `no matches found`) before `swtpcsim` ever sees it. One watcher at a time.
+
+The watcher never sets the pace, and one thing follows from that: the guest only advances
+**during a `run`**, so a character the watcher types between runs waits on the line and is
+read on the next `run` — the same as `send` staging input for the next `run`. While a `run`
+is in flight the two share the console live.
+
+## Debugging and inspecting
+
+The monitor's debugger is here too, structured. `step` advances a set number of instructions
+and hands back the register file and where the CPU came to rest; `breakpoints` lists, adds and
+removes the same breakpoints `BREAK` sets — and because they are the machine's breakpoints, a
+`run` or a `step` stops when one fires. `disasm` decodes memory through a non-invasive read, so
+it works on a ROM and even with no processor running. `bus_trace` returns the always-on flight
+recorder — the last cycles every board saw, with who drove and who answered — and `bus_irq`
+reports the interrupt lines the way `bus_map` reports the decode. `snapshot` and `restore` save
+the whole machine's state and read it back into a machine built the same way.
+
+None of these block, and none of them need the console: they are questions about the machine,
+answered the same way `SHOW` answers them. When a typed tool does not reach a corner you need —
+a conditional breakpoint, an octal listing — the `monitor` tool runs any monitor command and
+returns its text.
+
+## The schemas describe themselves
+
+**Every tool's schema comes off the same reflection layer as the TOML keys and the
+`SET`/`SHOW` commands.** There is one description of what a board is and what it can be
+asked, and the machine file parser, the monitor, and the MCP server all read it.
+
+The consequence is the point: **a board added tomorrow is drivable by an assistant the day
+it lands, with no new code.** Nobody writes an MCP tool for the new board. The board declares
+its properties, as it must anyway to be configurable at all, and the tool schema is that
+declaration.
+
+So there is no tool reference in this manual. Start the server and ask it what it has —
+`tools/list` returns every tool the server exposes, and `board_types` every board type;
+their answers are authoritative in a way a printed list could never be.
+
+## Configuring an assistant to use it
+
+MCP clients differ, but they all want the same two things: a command to run, and the fact
+that it speaks over stdio. The command is `swtpcsim <machine> --mcp`, and it does. Register it
+**once** and from then on you talk to the assistant, not to the server.
+
+**Claude Code (the command line)** takes it as one command — everything after `--` is what it
+will run, and it is best run from the directory you want the machine's files to resolve against:
+
+```
+claude mcp add swtpcsim -- swtpcsim <machine> --mcp
+claude mcp list                       # confirm it registered and is reachable
+```
+
+**Claude Desktop, or any client that reads a JSON config**, wants an `mcpServers` entry naming
+the command and its arguments (a `cwd` sets the working directory, since a desktop app has no
+shell to inherit one from):
+
+```json
+{
+  "mcpServers": {
+    "swtpcsim": { "command": "swtpcsim", "args": ["<machine>", "--mcp"] }
+  }
+}
+```
+
+The `<machine>` is a built-in name or a machine file, exactly as on the command line. If
+`swtpcsim` is not on your `PATH`, give its full path as the command.
+
+You are not limited to one. Register several machines under different names (`swtpc-flex`,
+`altair680`) and an assistant sees them all at once; `claude mcp add`'s *scope* decides whether
+a server is tied to the one project directory you added it from (the default), travels with a
+folder as a `.mcp.json` (`--scope project`), or is available everywhere (`--scope user`). One thing
+to know for file exchange: the sandbox is the server's working directory. The `claude`
+command line sets that to wherever you started it, so a relative machine path and the sandbox line
+up with the folder you are in; the desktop app currently starts the server in your home directory
+instead, so there give the machine an absolute path.
+
+`DRIVING-WITH-AI.md`, in this package, is the briefing written for the assistant itself — drop it
+in a working directory and the assistant has the recipes for booting, building and debugging over
+these tools. An example folder such as `examples/flex/` is a ready-made such directory — a machine
+and its disk together — for an assistant to drive over MCP.
+
+## Starting a project of your own
+
+An example folder such as `examples/flex/` is a ready-made round trip; once you want to write your
+own software the same shape is how to begin. **Make a folder of your own, put a machine in it, and
+point the assistant at that folder — not at the copy that came in the package.**
+
+**Put the machine and its images at the root of the folder.** Copy a machine that boots the system
+you want to build on — an `examples/flex/` folder is a good starting point, disk and
+machine file together — into a new folder, and work there. Register the server from inside that
+folder (as in the section above), so the machine file and the sandbox both resolve
+there. The guest writes to the disk image as it runs and the assistant leaves build files beside
+it, so keeping the shipped copy untouched means you always have a clean one to start over from.
+Make that a real baseline: keep a spare copy of just the machine and its fresh disk, so "start
+over" restores something known rather than whatever the guest last wrote.
+
+**Give it the local truth to read.** Drop `DRIVING-WITH-AI.md` in the folder, and keep a second
+folder — call it `Reference` — for anything else you want the assistant to lean on: the parts of
+this manual that matter to your project, and any source material of your own, converted to plain
+Markdown, which is the form an assistant ingests most reliably. These copies go stale the moment
+swtpcsim updates, and the assistant cannot tell an old copy from a current one, so refresh them
+when you update swtpcsim.
+
+**Keep a hand on it — it will reach for what it already knows.** An assistant does not read your
+machine's files and then do as they say. It predicts its next move from everything in front of it,
+weighed against everything it learned in training — and what it learned is vast, while a line in a
+local file is a single faint signal it saw a moment ago. So when the job looks like a common one —
+boot FLEX, assemble a file, copy something onto a disk — the move it reaches for first is the one
+it has seen a thousand times, even when the files in the folder say otherwise. A plain example:
+asked to get a program onto a disk, it will reach for a host tool that does not
+understand the DC-4's FLEX disks at all — when the way that works is to build inside the
+machine itself, exactly as `DRIVING-WITH-AI.md` lays out. The pull toward the
+familiar answer gets stronger the longer a session runs, and once it starts down that road it tends
+to talk itself further along rather than stop and re-read.
+
+So watch what it actually sends and reads back — the `--mirror` socket above is there for exactly
+this — rather than trusting its own summary of what it did. Correct it at the first wrong step,
+before it builds on that step, and point it at the file you mean and tell it to use that and only
+that. Be most wary when its answer looks the most standard: that is the moment a habit has most
+likely overridden something particular about your machine.
+
+**Make starting and stopping a ritual.** A short instruction you give every session pays for
+itself. At the end — "clean up" — have it close any processes still running, write down what you
+learned, and save where you are in a note in the folder. At the start, have it read that note and
+the `Reference` folder, boot the machine, and tell you where you left off. The note in the folder is
+what makes a session resumable; without it the assistant reconstructs the state from scratch each
+time, and reconstructs it wrong.

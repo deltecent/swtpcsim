@@ -1,0 +1,139 @@
+# Build
+build/
+build-asan/
+out/
+cmake-build-*/
+_deps/
+CMakeUserPresets.json
+
+# The plain-Makefile convenience build (docs/building-*.md): objects, generated
+# sources and the binary all live here (kept out of build/, which is CMake's).
+build-make/
+
+# Editors / IDEs
+.vscode/
+.idea/
+*.swp
+.cache/
+compile_commands.json
+
+# macOS
+.DS_Store
+.AppleDouble
+Icon?
+._*
+
+# Windows
+Thumbs.db
+*.pdb
+*.ilk
+
+# Simulator artifacts
+*.snap
+*.replay
+swtpcsim.log
+
+# The assembled distribution. tools/build-package.sh writes dist/swtpcsim-<ver>-<target>/
+# and the archive beside it -- an OUTPUT of the tree, never an input to it. The directory
+# itself is TRACKED (via dist/README.md) so it always exists after a checkout: dist/ is
+# also the release COLLECTION point (DISTRIBUTION.md 6), and a worker must be able to scp into
+# it before the coordinator has built anything. Contents stay ignored; the README does not.
+/dist/*
+!/dist/README.md
+
+# Binaries CI built, pulled down by tools/fetch-ci-binaries.sh. Scratch: overwritten on
+# every fetch, read by nothing in the build or the tests.
+/artifacts/
+
+# The built documents. THE MARKDOWN IS THE SOURCE; the PDF is an artifact of it, of the
+# binary (the reference chapters are printed from the program) and of a browser.
+#
+# The USER-FACING PDFs ARE TRACKED. tools/build-docs.sh makes docs/swtpcsim-manual.pdf and
+# docs/swtpcsim-devguide.pdf, and they are versioned deliverables: they ship in the
+# distribution zip beside the binary, and a fresh clone should carry the manual a reader can
+# open without a pandoc-and-a-browser toolchain to build it. So they are committed on purpose
+# (regenerate and re-commit them when the docs change), and NOT listed here.
+#
+# The line that is NOT ours to track is the SCANNED REFERENCE MANUALS in reference/ (below):
+# vendor datasheets, tens of MB each, and burned into this repo's history twice already. That
+# is the "no PDFs in the reference directory" rule -- our documentation is fine, their scans
+# are not. The intermediate HTML the browser prints from stays an artifact too.
+docs/*.html
+.swtpcsim_history
+
+# Disk/tape images are large and usually not ours to redistribute.
+# Commit them deliberately with `git add -f` if a test genuinely needs one.
+*.dsk
+*.DSK
+*.cas
+*.img
+
+# examples/ IS THE SHIPPED SET, and it is an allowlist: these are the examples the manual's
+# quick start names, and the ONLY media that goes in the package -- one home each, with the
+# tests pointed at them. The rules above would hide most of it (`*.DSK` swallows the disk
+# image), so each shipped file is named. If you add one and git does not see it, that is this
+# block doing its job -- add the line.
+examples/**
+!examples/**/
+!examples/**/*.toml
+!examples/**/*.ini
+!examples/**/README.md
+# The SWTPC FLEX 2.0 boot disk the swtpc quick start and the flex acceptance test name: a
+# 40-track single-sided image (102,400 bytes, the DC-4's flex geometry). deramp.com
+# provenance in docs/sources.md. The sibling FLEX2/3 images in the folder are NOT shipped.
+!examples/flex/FLEX2-40.DSK
+# The CP/68 boot disk the cp68 example names: TSC's CP/68 1.0, single-density 35x1x18x128
+# (80,640 bytes, the DC-4's cp68 geometry). deramp.com provenance in docs/sources.md.
+!examples/cp68/CP68.DSK
+# The Altair 680b KCACR audio-cassette demo tape.
+!examples/altair680/kcacr-demo.tap
+# The debugger example's 6800 program -- the walkthrough's own material, not a disk image:
+# the source for reading, the listing SYMBOLS LOAD reads, and the S-record LOAD reads.
+# Assembled with the as0 6800 cross-assembler (docs/sources.md).
+!examples/debugger/HELLO.ASM
+!examples/debugger/HELLO.LST
+!examples/debugger/HELLO.S19
+# The lamp board the Developer Guide's "Writing a board" chapter builds. It is out of the
+# shipping registry on purpose (the reader adds it), so it lives here rather than in src/ --
+# but it is compiled into the test binary and driven by tests/test_lamp.cpp, which is the
+# whole point: the chapter's code is a board that has to keep working, not a listing that can
+# rot. So it must be tracked, header though it is.
+!examples/boards/lamp/lamp.h
+# Every example's README is rendered to a sibling README.pdf (tools/build-docs.sh, committed
+# by CI) so a file manager with no Markdown viewer can read it, and so it travels in the
+# package. One glob covers all of them, at any depth.
+!examples/**/README.pdf
+
+# Scanned manuals and datasheets. Same reasoning as the disk images, and then
+# some: they are enormous (the 88-DCDD manual alone is 52 MB) and they are not
+# ours. They are the SOURCE the boards were built from, not part of the build --
+# keep them here on disk, cite them by filename in the code, and let
+# docs/sources.md say where each one came from. See [altair-hardware-sources].
+#
+# This was decided once, and then a `git add -A` put 83 MB of them in history
+# anyway; that history has been rewritten out. If you find yourself typing
+# `git add -f reference/...`, you are about to do it a third time.
+#
+# The ONE exception, allowlist-style like disks/ above: the *.md files here are
+# OURS -- distilled, text-only emulation references written FROM the scans, each
+# citing its source PDF by filename. "Our documentation is fine, their scans are
+# not." Those are tracked; the scans themselves stay ignored.
+reference/*
+!reference/*.md
+
+# The `lineprinter` machine's capture file. `machines/lineprinter.toml` connects the
+# 88-C700 to `file:printout.txt`, so merely running that machine from the repo root
+# drops one here -- and an empty one got committed once by a `git add -A` (37afae6).
+printout.txt
+
+# The `parallel` machine's capture file, for the same reason: `machines/parallel.toml`
+# connects the 88-PIO's `out` line to `file:parallel-out.txt`.
+parallel-out.txt
+
+# Agent scratch worktrees -- not repository content.
+.claude/worktrees/
+
+# TODO.md is an internal, fast-moving brainstorming/working document, not a
+# shipped artifact. Anything in it that is meant for the public becomes a GitHub
+# issue instead; the file itself stays out of the tree. (Untracked 2026-07-22.)
+TODO.md

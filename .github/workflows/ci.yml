@@ -1,0 +1,239 @@
+name: CI
+
+# Build a native swtpcsim binary on each platform and run the fast test suite.
+# The ~10-min 8080 exerciser (label "slow") is NOT run here -- see cpu-exerciser.yml,
+# which runs it only when CPU/ISA code changes.
+#
+# DOCUMENTATION-ONLY CHANGES RUN ONE LEG, NOT THREE.
+#
+# The fast suite VALIDATES the documentation -- docs-manual (the User Manual names nothing
+# outside the shipped package) and docs-reference (the committed docs/manual/ref/*.md matches
+# what the binary emits) both run here, and both need the binary. So a docs change is not a
+# no-op for CI and must not skip it. What a docs change does NOT need is the same binary built
+# on three operating systems: those two tests are platform-independent. So the `scope` job
+# classifies the diff and hands `build` a matrix of three legs for a code change or one (Linux)
+# for a docs-only change. There is no branch protection requiring the legs by name, so a
+# reduced matrix cannot deadlock a PR the way a trigger-level `paths:` filter would.
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # Look at what actually changed and choose the build matrix. Default is CODE (the full
+  # three-platform matrix): an unrecognized path runs everything, so a new directory is never
+  # silently skipped. Only a change that is ENTIRELY documentation drops to the single Linux leg.
+  scope:
+    name: Classify the change
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.pick.outputs.matrix }}
+      code: ${{ steps.pick.outputs.code }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0            # need the base commit present to diff against it
+
+      - id: pick
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # The legs.
+          #   macos-14 is the Apple-Silicon runner. This leg BUILDS NATIVE arm64 and is the
+          #   one leg with SDL3 installed, so it is the only place display_sdl.cpp is
+          #   compiled at all -- see the Configure step. It used to cross-build a universal
+          #   x86_64+arm64 binary, back when CI artifacts WERE the release. They are not any
+          #   more (DISTRIBUTION.md: each package is built natively on its own machine,
+          #   including an Intel Mac), and universal is mutually exclusive with a Homebrew
+          #   SDL3, which is arm64-only and will not link into a fat binary. Native buys the
+          #   video path a compiler; the x86_64 slice is covered natively off-CI instead.
+          linux='{"name":"linux-x86_64","os":"ubuntu-latest","artifact":"swtpcsim-linux-x86_64","binary":"build/swtpcsim"}'
+          macos='{"name":"macos-arm64","os":"macos-14","artifact":"swtpcsim-macos-arm64","binary":"build/swtpcsim"}'
+          windows='{"name":"windows-x86_64","os":"windows-latest","artifact":"swtpcsim-windows-x86_64","binary":"build/swtpcsim.exe"}'
+          full="{\"include\":[$linux,$macos,$windows]}"
+          docsonly="{\"include\":[$linux]}"
+
+          # HEAD is the merge commit (PR) or the pushed tip; diff it against the base.
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base='${{ github.event.pull_request.base.sha }}'
+          else
+            base='${{ github.event.before }}'
+          fi
+
+          # First push of a branch has no usable base -- take no chances, build everything.
+          if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+            echo "no base to diff against -- full matrix"
+            echo "code=true"       >> "$GITHUB_OUTPUT"
+            echo "matrix=$full"    >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Documentation = anything under docs/ or reference/, a top-level *.md, or LICENSE.
+          # Everything else is code -- src, tests, cmake, the data dirs the tests read
+          # (roms, tapes, machines, disks, cpm, examples), tools, and this workflow itself.
+          code=false
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            case "$f" in
+              docs/*|reference/*|LICENSE) ;;   # documentation
+              */*.md) code=true ;;             # a .md deeper in the tree (e.g. tests/) is code
+              *.md) ;;                          # a top-level .md (README, DESIGN) is documentation
+              *) code=true ;;                   # anything else
+            esac
+          done < <(git diff --name-only "$base" HEAD)
+
+          if [ "$code" = "true" ]; then
+            echo "code changed -- full matrix"
+            echo "code=true"    >> "$GITHUB_OUTPUT"
+            echo "matrix=$full" >> "$GITHUB_OUTPUT"
+          else
+            echo "documentation only -- Linux leg only (still runs docs-manual + docs-reference)"
+            echo "code=false"       >> "$GITHUB_OUTPUT"
+            echo "matrix=$docsonly" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs: scope
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    # THE WAIT IN CI IS THE COMPILE, NOT THE TESTS. The fast suite is seconds; a cold C++
+    # build is minutes. Two levers, and they are not the same lever on every leg:
+    #   - sccache caches object files across runs keyed on the preprocessed source and the
+    #     compiler+flags, so a warm push only recompiles the TUs the diff touched. MEASURED:
+    #     Linux 46s->22s (87% hit), macOS 44s->31s (37%). GitHub Actions cache is the backend
+    #     (SCCACHE_GHA_ENABLED); no actions/cache step needed.
+    #   - Ninja instead of MSBuild on Windows (see the MSVC step) -- and on Windows that is
+    #     the ENTIRE win: the leg dropped 258s->188s from the generator alone, while sccache
+    #     gets 0% there (all writes fail against the Actions cache v2 backend with MSVC; a
+    #     known sccache issue, non-fatal -- the build still passes, it just does not cache).
+    # Net wall-clock ~4.5 min -> ~3.4 min, Windows still the long pole. Closing the Windows
+    # cache is the remaining prize and is tracked separately, not blocking.
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+    # All legs that run are required to pass. Windows was advisory (continue-on-error) while
+    # src/platform/win32/ was being brought up; it now compiles, links, and passes the full
+    # suite on MSVC, so a Windows regression blocks a PR like any other. fail-fast is off so
+    # one platform's failure does not cancel the others.
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.scope.outputs.matrix) }}
+
+    steps:
+      # FULL HISTORY, BECAUSE THE BINARY NAMES ITS OWN COMMIT. CMakeLists.txt bakes
+      # `git describe --tags --always` into --version, and at the default depth of 1 no
+      # tag is reachable -- so every CI artifact reported a bare short sha instead of
+      # v0.1.0-N-gsha. Both are traceable; only one is legible in a bug report, and these
+      # are the binaries handed to people to try (tools/fetch-ci-binaries.sh pulls them).
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      # The compiler cache. Installs the sccache binary and wires it to the Actions cache.
+      # The Configure step below points CMake's compiler launcher at it on every leg.
+      - name: Set up sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
+      # WINDOWS BUILDS WITH NINJA + MSVC, NOT THE VISUAL STUDIO GENERATOR. Two reasons, and the
+      # first turned out to be the one that pays: Ninja is simply faster than MSBuild here (leg
+      # 258s->188s). The second was the original motive -- sccache hooks in through CMake's
+      # COMPILER_LAUNCHER, which the VS/MSBuild generator ignores while Ninja and Makefiles
+      # honor it -- but MSVC+sccache gets 0% against the Actions cache today, so on this leg
+      # the launcher is wired and waiting rather than helping. Ninja is a single-config
+      # generator, which is why the Windows binary is build/swtpcsim.exe (no Release/ subdir)
+      # above. msvc-dev-cmd puts cl.exe and the MSVC environment into GITHUB_ENV so every later
+      # step -- Configure, Build, Test -- sees the toolchain without a vcvars dance of its own.
+      - name: Set up MSVC (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      # expect drives the interactive acceptance tests. Ubuntu needs it installed;
+      # macOS ships it; Windows gets none -- those tests self-skip at configure time
+      # (CMakeLists.txt: if(EXPECT_EXECUTABLE)) and the build/other tests still run.
+      # The install goes through tools/ci-apt-install.sh because the runners'
+      # `apt-get update` intermittently HANGS on a slow mirror; the helper tries a
+      # plain install first, times out and retries, and fails fast instead of stalling.
+      - name: Install expect (Linux)
+        if: runner.os == 'Linux'
+        timeout-minutes: 12
+        run: bash tools/ci-apt-install.sh expect
+
+      # SDL3 ON EXACTLY ONE LEG, AND THAT IS THE POINT. display_sdl.cpp is macro-gated
+      # behind find_package(SDL3), so with no SDL3 anywhere in CI it was compiled by
+      # NOTHING and a change that broke it went green on all three platforms. Every
+      # binary the project shipped through v0.2.0 was headless for the same reason.
+      # One leg with a real SDL3 closes that. macOS is the cheap one: brew has it, and
+      # this leg no longer builds universal, which is what made brew's arm64-only SDL3
+      # unusable here before.
+      - name: Install SDL3 (macOS)
+        if: runner.os == 'macOS'
+        run: brew install sdl3
+
+      # Configure ONCE and keep the log: the SDL3 line is printed by the configure that
+      # evaluates find_package, so re-running to "check" it is both wasteful and unreliable
+      # against a warm cache. Capture, then assert against what was captured.
+      - name: Configure
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Ninja on Windows (see the MSVC step); the platform default elsewhere. The compiler
+          # launcher is set on every leg -- Makefiles (Linux/macOS default) and Ninja both honor
+          # it, which is the whole reason Windows is on Ninja.
+          gen=""
+          [ "${{ runner.os }}" = "Windows" ] && gen="-G Ninja"
+          # -DWERROR=on makes a warning fail the build on every leg -- this is where the
+          # zero-warnings rule is enforced. It is OFF in CMakeLists.txt by default so a
+          # local or unfamiliar toolchain still builds; each of GCC, Clang and MSVC has its
+          # own warning set, and here all three must be clean at once (issue #222).
+          cmake -B build -DCMAKE_BUILD_TYPE=Release \
+            -DWERROR=on \
+            -DCMAKE_C_COMPILER_LAUNCHER=sccache \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=sccache \
+            $gen 2>&1 | tee configure.log
+          grep -E "SDL3 (found|not found)" configure.log || true
+
+      # AND FAIL THE MAC LEG IF IT CAME UP HEADLESS. That line has been in the configure
+      # log all along; nobody read it, and that is the entire history of the bug above.
+      # This reads it every time, so the coverage cannot lapse silently.
+      - name: The macOS leg must have SDL3
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          grep -q "SDL3 found" configure.log || {
+            echo "::error::this leg came up HEADLESS -- it is the only one that compiles display_sdl.cpp"
+            exit 1
+          }
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      # What the cache actually did this run. A near-100% hit rate on a warm run is the
+      # payoff; a run that shows all misses (a new compiler image, a cache eviction) is the
+      # cold case this is meant to make rare, and this line is where you see which you got.
+      - name: sccache stats
+        run: sccache --show-stats
+
+      # SAY WHICH COMMIT THIS IS, in the log, on every leg. The version string is baked in
+      # at configure time from `git describe`, so it is the one thing in the run that can
+      # go quietly wrong without failing anything: revert the checkout above to the default
+      # depth and the artifacts still build, still pass, and silently stop naming their
+      # tag. This line is where that would be visible.
+      - name: Version
+        shell: bash
+        run: |
+          "${{ matrix.binary }}" --version
+
+      # Fast suite only. Every leg is single-config now (Windows moved to Ninja), so -C Release
+      # is a harmless no-op rather than the requirement it was under the VS generator -- kept
+      # so the line reads the same everywhere. serial-hw self-skips (exit 77); disk-gated tests
+      # are not registered without the (non-git) CP/M images.
+      - name: Test (fast)
+        run: ctest --test-dir build -C Release -LE slow --output-on-failure
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.binary }}
+          if-no-files-found: error
