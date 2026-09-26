@@ -1995,13 +1995,18 @@ void Monitor::showConsole(std::ostream& out) {
         << ")\n";
     showProps(con.properties(), out);
 
+    // A unit holds the console when it is wired to it -- or, under --mcp, when its line is
+    // the console's stand-in: a filter that follows the console's transforms (issue #529).
     std::string holder;
     for (const auto& b : m_.boards())
-        for (const auto& u : b->units())
-            if (u.kind == UnitKind::Serial && u.state == "console") {
-                if (!holder.empty()) holder += ", ";
-                holder += b->id + ":" + u.name;
-            }
+        for (const auto& u : b->units()) {
+            if (u.kind != UnitKind::Serial) continue;
+            const auto* f       = dynamic_cast<const FilterStream*>(b->unitStream(u.name));
+            const bool  standIn = f && f->follows(con.filter());
+            if (u.state != "console" && !standIn) continue;
+            if (!holder.empty()) holder += ", ";
+            holder += b->id + ":" + u.name + (standIn ? " (--mcp)" : "");
+        }
     out << "\n  held by  " << (holder.empty() ? "(nobody -- CONNECT <id>:<unit> console)" : holder)
         << "\n";
     out << "\n  The transforms (UPPER, STRIP7OUT, CRLF, BSDEL...) are the CONSOLE's, and\n"

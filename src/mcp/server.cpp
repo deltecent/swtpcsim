@@ -766,10 +766,12 @@ ScriptedStream* console(Machine& m, McpSession& s, std::string& err) {
             // back as bit-7 parity junk (0x4F 'O' -> 0xCF). The transforms are the console's,
             // applied to the console's stand-in; the endpoint grammar deliberately cannot
             // express a filter (host/filter.h), so it is installed as a pre-built stream.
+            // It FOLLOWS the console's settings rather than copying them, so a SET CONSOLE
+            // made mid-session reaches the guest (issue #529).
             auto base = resolveEndpoint(baseSpec, err);
             if (!base) return nullptr;
             auto filt = std::make_unique<FilterStream>(std::move(base));
-            filt->copySettingsFrom(Console::instance().filter());
+            filt->follow(Console::instance().filter());
 
             // connectStream takes the pre-built, filtered stack. A board not taught the seam
             // refuses; fall back to the bare line -- no transforms, but no regression. (Every

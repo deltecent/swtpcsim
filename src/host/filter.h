@@ -12,9 +12,10 @@
 // and the real Console -- transform chain and all -- is bypassed. That scripted line
 // IS the console: it has the AI (and any mirror watcher) on the end of it, not a
 // device, so it wants the SAME transforms the console owns. So the MCP console binding
-// wraps its scripted line in a FilterStream seeded from Console::instance()'s settings
-// (copySettingsFrom, below). This is not the forbidden case: it is a terminal's
-// transforms on a terminal's stand-in, never a strip7out on a binary wire.
+// wraps its scripted line in a FilterStream that FOLLOWS Console::instance()'s settings
+// (follow(), below) -- not a copy of them, so a SET CONSOLE mid-session reaches the
+// guest (issue #529). This is not the forbidden case: it is a terminal's transforms on
+// a terminal's stand-in, never a strip7out on a binary wire.
 //
 // AN EARLIER VERSION OF THIS FILE ARGUED THE OPPOSITE, at some length: that the
 // chain belonged on the LINE, inside every UART, so that `SET sio0 UPPER=ON`
@@ -67,25 +68,31 @@ enum class BsMap {
     Del,  // fold BS -> DEL   (what a few things want instead)
 };
 
+// The transform settings, as one block so a follower can read another filter's live.
+struct FilterSettings {
+    bool   upper     = false;
+    bool   strip7in  = false;
+    bool   strip7out = false;
+    bool   crlf      = false;
+    bool   echo      = false;
+    bool   bell      = true;
+    BsMap  bsmap     = BsMap::Off;
+};
+
 class FilterStream : public ByteStream {
 public:
     explicit FilterStream(std::unique_ptr<ByteStream> inner) : inner_(std::move(inner)) {}
 
     ByteStream* inner() { return inner_.get(); }
 
-    // Seed this filter's transforms from another's -- the one carve-out to "the Console
-    // owns the filter" (see the header): the `--mcp` console binding gives its scripted
-    // stand-in the same chain the real Console holds. Copies the transform SETTINGS only,
-    // never the wrapped stream.
-    void copySettingsFrom(const FilterStream& o) {
-        upper_     = o.upper_;
-        strip7in_  = o.strip7in_;
-        strip7out_ = o.strip7out_;
-        crlf_      = o.crlf_;
-        echo_      = o.echo_;
-        bell_      = o.bell_;
-        bsmap_     = o.bsmap_;
-    }
+    // Run on another filter's transforms instead of this one's own -- the one carve-out to
+    // "the Console owns the filter" (see the header): the `--mcp` console binding makes its
+    // scripted stand-in follow the chain the real Console holds. It reads the SETTINGS live,
+    // so a SET CONSOLE lands at once; never the wrapped stream. `o` must outlive this filter
+    // (the Console is a process singleton). This filter's own properties() then set
+    // settings nothing reads -- a follower is never the one SET CONSOLE addresses.
+    void follow(const FilterStream& o) { s_ = &o.own_; }
+    bool follows(const FilterStream& o) const { return s_ == &o.own_; }
 
     // THERE IS NO reconnect(). There used to be, because the chips each built a
     // FilterStream around whatever was plugged into them and a fresh CONNECT threw
@@ -121,13 +128,8 @@ public:
 private:
     std::unique_ptr<ByteStream> inner_;
 
-    bool   upper_     = false;
-    bool   strip7in_  = false;
-    bool   strip7out_ = false;
-    bool   crlf_      = false;
-    bool   echo_      = false;
-    bool   bell_      = true;
-    BsMap  bsmap_     = BsMap::Off;
+    FilterSettings        own_;
+    const FilterSettings* s_ = &own_;  // own_, or the settings of the filter we follow()
 };
 
 } // namespace swtpc

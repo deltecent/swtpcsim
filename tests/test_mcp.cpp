@@ -580,13 +580,31 @@ void test_mcp() {
         // seam SET CONSOLE and the TOML loader drive. Save/restore: the Console is a process
         // singleton shared with every other test.
         std::string err;
-        bool        saved = false;
-        for (Property& p : Console::instance().properties())
-            if (p.name == "strip7out") { saved = p.get().b(); p.set(Value::ofBool(true), err); }
+        bool        saved = false, savedUpper = false;
+        auto setConsole = [&err](const char* name, bool on) {
+            for (Property& p : Console::instance().properties())
+                if (p.name == name) p.set(Value::ofBool(on), err);
+        };
+        for (Property& p : Console::instance().properties()) {
+            if (p.name == "strip7out") saved = p.get().b();
+            if (p.name == "upper") savedUpper = p.get().b();
+        }
+        setConsole("strip7out", true);
+        setConsole("upper", false);
 
         std::ostringstream s;
         s << R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})" << "\n";
-        runScript(m, s.str());  // binds the console to Filter(scripted)
+        s << R"({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"monitor",)"
+          << R"("arguments":{"command":"SHOW CONSOLE"}}})" << "\n";
+        auto rep = runScript(m, s.str());  // binds the console to Filter(scripted)
+
+        // SHOW CONSOLE names the stand-in as the console's holder (issue #529): it used to
+        // say "(nobody", which read as the transforms being out of the path.
+        const std::string show =
+            rep.count(2) ? rep[2].at("result").at("content").items().at(0).at("text").str()
+                         : std::string();
+        CHECK(show.find("(--mcp)") != std::string::npos && show.find("(nobody") == std::string::npos,
+              "SHOW CONSOLE under --mcp names the console stand-in as the holder");
 
         // The console unit's stream is a FilterStream (outermost) over the scripted line.
         FilterStream*   filt = nullptr;
@@ -608,11 +626,23 @@ void test_mcp() {
             filt->write(&hi, 1);
             CHECK(sc->out() == std::string(1, (char)0x4F),
                   "strip7out reaches the assistant: 0xCF arrives as 0x4F, not junk");
+
+            // A SET CONSOLE made AFTER the binding reaches the guest (issue #529): the
+            // stand-in follows the console's settings, it does not hold a copy of them.
+            uint8_t c = 0;
+            setConsole("upper", true);
+            sc->feed("a");
+            CHECK(filt->read(&c, 1) == 1 && c == 'A',
+                  "SET CONSOLE upper=on mid-session folds what the assistant types");
+            setConsole("upper", false);
+            sc->feed("a");
+            CHECK(filt->read(&c, 1) == 1 && c == 'a',
+                  "and upper=off mid-session stops folding it");
         }
 
         // Restore the singleton for the tests that follow.
-        for (Property& p : Console::instance().properties())
-            if (p.name == "strip7out") p.set(Value::ofBool(saved), err);
+        setConsole("strip7out", saved);
+        setConsole("upper", savedUpper);
     }
 
     SECTION("MCP: a RUN via the monitor tool parks instead of wedging the server");
