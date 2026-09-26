@@ -19,6 +19,7 @@
 #include <csignal>
 #include <deque>
 #include <filesystem>
+#include <fstream>
 #include <istream>
 #include <map>
 #include <mutex>
@@ -700,6 +701,134 @@ void test_mcp() {
         CHECK(st.has("registers") && st.has("pc") && st.has("cycles"),
               "and reported the register file, pc and cycles");
         CHECK(st.at("stopped").str() == "steps", "it stopped on the count, not a WAI/breakpoint");
+    }
+
+    // AN ARGUMENT OF THE WRONG JSON TYPE IS REFUSED, NOT READ AS 0 (#579). JSON has no hex,
+    // so "from":"0xFF00" is the natural mistake -- and it used to run from PC 0 with no
+    // word. Every tool's arguments are checked against its own inputSchema first.
+    SECTION("MCP: an argument of the wrong type, or a missing one, is refused by name (#579)");
+    {
+        Machine m;
+        if (!loadAltair680(m)) return;
+        std::ostringstream s;
+        int id = 0;
+        auto req = [&](const std::string& params) {
+            s << R"({"jsonrpc":"2.0","id":)" << ++id
+              << R"(,"method":"tools/call","params":)" << params << "}\n";
+        };
+        // Boot first, so the PC sits in the ROM: a `from` read as 0 would then show.
+        req(R"({"name":"run","arguments":{"from":65496,"until":".","timeout_ms":4000}})"); // 1
+        req(R"({"name":"run","arguments":{"from":"0xFF00","timeout_ms":100}})");       // 2
+        req(R"({"name":"mem_dump","arguments":{"lo":"0x100","hi":271}})");            // 3
+        req(R"({"name":"mem_dump","arguments":{"hi":15}})");                           // 4
+        req(R"({"name":"mem_deposit","arguments":{"addr":256,"bytes":"00","rom":"true"}})"); // 5
+        req(R"({"name":"mem_dump","arguments":{"lo":"256","hi":271}})");               // 6
+        req(R"({"name":"regs","arguments":{}})");                                      // 7
+        req(R"({"name":"mem_dump","arguments":{"lo":256,"hi":271}})");                 // 8
+        auto rep = runScript(m, s.str());
+
+        auto err = [&](int n) {
+            const Json& r = rep[n].at("result");
+            return r.at("isError").boolean() ? r.at("content").items()[0].at("text").str()
+                                             : std::string();
+        };
+        const long long booted = rep[1].at("result").at("structuredContent").at("pc").integer();
+        CHECK(err(2).find("`from` must be a JSON number") != std::string::npos &&
+                  err(2).find("65280") != std::string::npos,
+              "a hex string for `from` is refused, and the error gives the number to send");
+        CHECK(rep[7].at("result").at("structuredContent").at("pc").integer() == booted,
+              "...and nothing ran: the PC is where the boot left it, not 0 or FF00");
+        CHECK(err(3).find("`lo` must be a JSON number") != std::string::npos &&
+                  err(3).find("256") != std::string::npos,
+              "mem_dump refuses a string `lo` instead of dumping address 0");
+        CHECK(err(4).find("`lo` is required") != std::string::npos,
+              "a missing required argument is refused, not read as 0");
+        CHECK(err(5).find("`rom` must be true or false") != std::string::npos,
+              "a boolean sent as a string is refused, not read as false");
+        CHECK(err(6).find("write 256, not \"256\"") != std::string::npos,
+              "a decimal string gets told to drop the quotes");
+        CHECK(err(8).empty() && rep[8].at("result").at("structuredContent").at("lo").integer() == 256,
+              "the same call with numbers works");
+    }
+
+    // SET BUS UNCLAIMED=WARN|HALT HOLDS UNDER MCP AS AT THE MONITOR (#580). HALT stops the
+    // run with `unclaimed`; WARN returns the warning line in `warnings`; each run re-arms
+    // the once-per-address de-dup, so a second run reports the address again.
+    SECTION("MCP: run honours SET BUS UNCLAIMED=HALT and WARN (#580)");
+    {
+        Machine m;
+        if (!loadAltair680(m)) return;
+        std::ostringstream s;
+        int id = 0;
+        auto req = [&](const std::string& params) {
+            s << R"({"jsonrpc":"2.0","id":)" << ++id
+              << R"(,"method":"tools/call","params":)" << params << "}\n";
+        };
+        // 0040: LDAA $2000 ; BRA 0040 -- a guest polling an address no board on the 680b
+        // decodes (its RAM is 0000-03FF).
+        req(R"({"name":"monitor","arguments":{"command":"DEPOSIT 40 B6 20 00 20 FB"}})"); // 1
+        req(R"({"name":"monitor","arguments":{"command":"SET BUS UNCLAIMED=HALT"}})");    // 2
+        req(R"({"name":"run","arguments":{"from":64,"timeout_ms":2000}})");               // 3
+        req(R"({"name":"monitor","arguments":{"command":"SET BUS UNCLAIMED=WARN"}})");    // 4
+        req(R"({"name":"run","arguments":{"from":64,"timeout_ms":200}})");                // 5
+        req(R"({"name":"run","arguments":{"from":64,"timeout_ms":200}})");                // 6
+        auto rep = runScript(m, s.str());
+
+        const Json& h = rep[3].at("result").at("structuredContent");
+        CHECK(h.at("stopped").str() == "unclaimed", "HALT stops the run as `unclaimed`");
+        CHECK(h.at("warnings").items().size() == 1 &&
+                  h.at("warnings").items()[0].str().find("read 2000") != std::string::npos,
+              "...and returns the warning line naming the address");
+        const std::string ht = rep[3].at("result").at("content").items()[0].at("text").str();
+        CHECK(ht.find("stopped: read from 0x2000, which no board decodes") != std::string::npos,
+              "...and the text says which address, as the monitor does");
+
+        for (int n : {5, 6}) {
+            const Json& w = rep[n].at("result").at("structuredContent");
+            CHECK(w.at("stopped").str() != "unclaimed", "WARN does not stop the run");
+            CHECK(w.at("warnings").items().size() == 1 &&
+                      w.at("warnings").items()[0].str().find("read 2000") != std::string::npos,
+                  "WARN returns the line, and each run reports it again");
+        }
+    }
+
+    // BREAK TAPE STOP stops an MCP run as it stops a monitor RUN -- the same slice-loop gap
+    // as #580, found beside it.
+    SECTION("MCP: run stops on BREAK TAPE STOP as `tape-stop`");
+    {
+        const auto tap = std::filesystem::temp_directory_path() / "swtpcsim-mcp-tapestop.tap";
+        {
+            std::ofstream f(tap, std::ios::binary);
+            for (int i = 0; i < 300; ++i) f.put(char(i & 0xFF));
+        }
+        Machine m;
+        if (!loadAltair680(m)) return;
+        std::ostringstream s;
+        int id = 0;
+        auto req = [&](const std::string& params) {
+            s << R"({"jsonrpc":"2.0","id":)" << ++id
+              << R"(,"method":"tools/call","params":)" << params << "}\n";
+        };
+        auto mon = [&](const std::string& cmd) {
+            req(R"({"name":"monitor","arguments":{"command":")" + cmd + R"("}})");
+        };
+        std::string path = tap.generic_string();
+        mon("BOARDS ADD 680kcacr acr0");
+        mon("MOUNT acr0:tape \\\"" + path + "\\\"");
+        mon("SET acr0:tape stop=0:05");  // 150 bytes in, at 300 baud
+        // 0040: LDAA $F010 ; RORA ; BCS 0040 ; LDAA $F011 ; BRA 0040 -- read the tape
+        // forever (the KCACR's RDA is active-low: D0 = 1 means nothing yet).
+        mon("DEPOSIT 40 B6 F0 10 46 25 FA B6 F0 11 20 F5");
+        mon("BREAK TAPE STOP");
+        req(R"({"name":"run","arguments":{"from":64,"timeout_ms":4000}})");  // 6
+        auto rep = runScript(m, s.str());
+        std::error_code ec;
+        std::filesystem::remove(tap, ec);
+
+        for (int n = 1; n <= 5; ++n)
+            CHECK(!rep[n].at("result").at("isError").boolean(), "the tape set-up is accepted");
+        CHECK(rep[6].at("result").at("structuredContent").at("stopped").str() == "tape-stop",
+              "the run stops at the tape's auto-stop mark");
     }
 
     SECTION("MCP: run stops on a prompt as idle, and SET cpu0 idle=off keeps it running");

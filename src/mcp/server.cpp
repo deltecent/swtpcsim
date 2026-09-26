@@ -18,6 +18,7 @@
 #include "util/json.h"
 
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <deque>
 #include <fstream>
@@ -180,10 +181,15 @@ Json toolList() {
                        "Advance the running guest a bounded slice and return what it printed to "
                        "the console. STOPS on: `until` matched, a prompt reached (the guest is "
                        "spinning on console input with nothing to say), timeout_ms, max_steps, a "
-                       "HLT, a breakpoint, or a SIGINT to the altairsim process itself (an "
-                       "out-of-band ^C -- there is no in-band way to interrupt a call yet) -- "
-                       "reported in `stopped`. This is the expect loop: type a command with "
-                       "`input`, read the reply, call again. Never blocks.",
+                       "WAI, a breakpoint, an address no board decodes under SET BUS "
+                       "UNCLAIMED=HALT (`unclaimed`), a BREAK TAPE STOP (`tape-stop`), a "
+                       "`notifications/cancelled` naming this call's "
+                       "request id, or a SIGINT to the swtpcsim process itself (an "
+                       "out-of-band ^C) -- reported in `stopped`, the last two as "
+                       "`interrupted`. Bus and board messages from the run (a SET BUS "
+                       "UNCLAIMED=WARN line, say) come back in `warnings`. This is the expect "
+                       "loop: type a command with `input`, read the reply, call again. Never "
+                       "blocks.",
                        p, {}));
     }
     {
@@ -492,6 +498,64 @@ Json dataResult(const Json& data, const std::string& text) {
     return r;
 }
 
+// A string sent where the schema says integer is almost always an address someone wrote
+// in hex, because JSON has none. Say what number to send instead: "0xFF00" is 65280.
+std::string integerHint(const std::string& s) {
+    if (s.empty()) return "";
+    if (s.find_first_not_of("0123456789") == std::string::npos)
+        return ": write " + s + ", not \"" + s + "\"";
+    std::string h = s;
+    if (h.size() > 2 && h[0] == '0' && (h[1] == 'x' || h[1] == 'X')) h = h.substr(2);
+    else if (h.size() > 1 && (h.back() == 'h' || h.back() == 'H')) h.pop_back();
+    if (h.empty() || h.size() > 8 || h.find_first_not_of("0123456789abcdefABCDEF") != std::string::npos)
+        return "";
+    return ": \"" + s + "\" is " + std::to_string(std::stoull(h, nullptr, 16));
+}
+
+// CHECK THE ARGUMENTS AGAINST THE TOOL'S OWN inputSchema before any tool code reads them
+// (#579). Json's accessors return a default for the wrong type -- integer() of a string is
+// 0 -- so without this "from":"0xFF00" ran from PC 0 and "lo":"0x100" dumped address 0,
+// with no error. One check here covers every tool: a required argument that is missing, and
+// an integer, string or boolean of the wrong JSON type. Empty = fine.
+std::string checkArgs(const std::string& name, const Json& args) {
+    static const Json tools = toolList();
+    const Json* schema = nullptr;
+    for (const auto& t : tools.items())
+        if (t.at("name").str() == name) schema = &t.at("inputSchema");
+    if (!schema) return "";  // an unknown tool is callTool's to report
+    for (const auto& r : schema->at("required").items())
+        if (!args.has(r.str())) return "`" + r.str() + "` is required";
+    for (const auto& [key, v] : args.fields()) {
+        const std::string want = schema->at("properties").at(key).at("type").str();
+        if (want == "integer") {
+            if (v.type() == Json::T::Num && v.num() == std::floor(v.num())) continue;
+            std::string msg = "`" + key + "` must be a JSON number";
+            if (v.type() == Json::T::Str) msg += ", not a string" + integerHint(v.str());
+            return msg;
+        }
+        if (want == "string" && v.type() != Json::T::Str)
+            return "`" + key + "` must be a JSON string";
+        if (want == "boolean" && v.type() != Json::T::Bool)
+            return "`" + key + "` must be true or false";
+    }
+    return "";
+}
+
+// What the bus and the boards said while the guest ran -- a SET BUS UNCLAIMED=WARN line,
+// a contention report, a disk that would not sync. Monitor::flush() prints the same two
+// logs after a RUN; under MCP they come back as `warnings` (#580).
+Json drainWarnings(Machine& m, std::string& text) {
+    Json w = Json::arr();
+    for (const auto& s : m.bus.drain()) w.push(Json(s));
+    m.bus.clearLog();
+    for (const auto& s : m.drainBoardLog()) w.push(Json(s));
+    for (const auto& s : w.items()) {
+        if (!text.empty() && text.back() != '\n') text += '\n';
+        text += s.str();
+    }
+    return w;
+}
+
 bool parseBytes(const std::string& s, std::vector<uint8_t>& out) {
     std::istringstream in(s);
     std::string t;
@@ -724,6 +788,8 @@ ScriptedStream* console(Machine& m, McpSession& s, std::string& err) {
 
 Json callTool(Machine& m, McpSession& sess, const std::string& name, const Json& args) {
     char buf[256];
+
+    if (std::string bad = checkArgs(name, args); !bad.empty()) return textResult(bad, true);
 
     if (name == "board_types") {
         Json a = Json::arr();
@@ -1054,6 +1120,10 @@ Json callTool(Machine& m, McpSession& sess, const std::string& name, const Json&
         if (args.has("from")) cpu->setPc((uint16_t)args.at("from").integer());
         if (args.has("input")) con->feed(args.at("input").str());
 
+        // Re-arm the unclaimed-address de-dup for this run, as runMachine does for a RUN, so
+        // an absent address reported by the last run is reported again by this one (#580).
+        m.bus.resetUnclaimedWarnings();
+
         // #490: publish a slice-boundary snapshot so `status`, answered out of band by the
         // reader thread, can report on THIS run without ever touching the Machine/CpuCore
         // itself -- see RunSnapshot's own comment for why that split has to exist, and
@@ -1131,6 +1201,7 @@ Json callTool(Machine& m, McpSession& sess, const std::string& name, const Json&
         int             quietSlices = 0;         // consecutive quiet slices -- the instruction-count rule
         clk::time_point idleSince{};             // when this unbroken run of quiet began; unset = busy
         std::string     stopped;
+        RunResult       last;                    // the slice that stopped on unclaimed/tape-stop
 
         auto drain = [&] {
             const std::string& o = con->out();
@@ -1190,6 +1261,13 @@ Json callTool(Machine& m, McpSession& sess, const std::string& name, const Json&
             if (r.why == StopReason::NoCpu)       { stopped = "no-cpu";      break; }
             if (r.why == StopReason::StopRequested) { Debugger::clearStopRequest();
                                                     stopped = "interrupted"; break; }
+            // SET BUS UNCLAIMED=HALT and BREAK TAPE STOP stop the monitor's RUN; they stop
+            // this one too (#580). `last` keeps the address for the stop line below.
+            if (r.why == StopReason::Unclaimed || r.why == StopReason::TapeStop) {
+                last    = r;
+                stopped = stopReasonName(r.why);
+                break;
+            }
 
             // IDLE-STOP -- hand control back when the guest has nothing to do, so the AI is not
             // made to wait out timeout_ms for its next command. Gated on clock.idle() like
@@ -1226,6 +1304,15 @@ Json callTool(Machine& m, McpSession& sess, const std::string& name, const Json&
         d["pc"]      = Json((long long)cpu->pc());
         d["steps"]   = Json((long long)steps);
         std::string text = out;
+        if (stopped == "unclaimed") {
+            // The monitor's stop line, so the text says WHICH address; the warning with the PC
+            // follows it, from the bus log.
+            std::snprintf(buf, sizeof buf, "stopped: %s 0x%04X, which no board decodes",
+                          last.write ? "write to" : "read from", last.addr);
+            if (!text.empty() && text.back() != '\n') text += '\n';
+            text += buf;
+        }
+        d["warnings"] = drainWarnings(m, text);
         if (!text.empty() && text.back() != '\n') text += '\n';
         text += "[stopped: " + stopped + "]";
         return dataResult(d, text);
@@ -1249,7 +1336,7 @@ Json callTool(Machine& m, McpSession& sess, const std::string& name, const Json&
         const bool  hadConsole = !sess.conBoard.empty();
         if (!console(m, sess, conErr)) {
             if (hadConsole && !conErr.empty())
-                std::cerr << "altairsim: --mcp console lost: " << conErr << "\n";
+                std::cerr << "swtpcsim: --mcp console lost: " << conErr << "\n";
             sess.conBoard.clear();
             sess.conUnit.clear();
         }
@@ -1275,6 +1362,8 @@ Json callTool(Machine& m, McpSession& sess, const std::string& name, const Json&
         Json d = Json::obj();
         std::string text;
         d["registers"] = regsObject(c, text);
+        d["warnings"]  = drainWarnings(m, text);  // an UNCLAIMED=WARN line, say (#580)
+        if (!text.empty() && text.back() != '\n') text += '\n';
         d["steps"]    = Json((long long)steps);
         d["cycles"] = Json((long long)cycles);
         d["pc"]       = Json((long long)c->pc());

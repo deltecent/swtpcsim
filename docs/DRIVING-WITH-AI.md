@@ -167,10 +167,11 @@ off the board itself, so ask `board_types` what a board can be told rather than 
 
 | Tool | Args | Does |
 |---|---|---|
-| `run` | `from?`, `input?`, `until?`, `timeout_ms?` (2000), `max_steps?` | Type `input`, advance the guest, return what it printed. Stops on `until` match, a **prompt** (guest idle on console input), `timeout_ms`, `max_steps`, WAI or breakpoint — see `stopped`. `from` sets PC first (that is how you boot). **Never blocks.** |
+| `run` | `from?`, `input?`, `until?`, `timeout_ms?` (2000, max 600000), `max_steps?` | Type `input`, advance the guest, return what it printed. Stops on `until` match, a **prompt** (guest idle on console input), `timeout_ms`, `max_steps`, WAI, a breakpoint, an address no board decodes under `SET BUS UNCLAIMED=HALT` (`unclaimed`), a `BREAK TAPE STOP` (`tape-stop`), or a cancel of the request (`notifications/cancelled`) or a ^C sent to the swtpcsim process (both give `stopped: "interrupted"`) — see `stopped`. `timeout_ms` is a ceiling, not a wait: the call returns as soon as one of the others fires. `from` sets PC first (that is how you boot). Bus and board messages from the run, such as a `SET BUS UNCLAIMED=WARN` line, come back in `warnings`. **Never blocks.** |
 | `send` | `text` | Type at the console without running. |
 | `recv` | — | Drain output since last read, without running. |
 | `regs` | — | CPU registers now (`pc`, `halted`, `registers{}`). |
+| `status` | — | Answered at once, even mid-`run`: `in_flight`, and the `pc`/`steps` of the last `run` (see below). |
 
 **`monitor`** `{command}` runs any one monitor command (`CONNECT`, `MOUNT`, `SET`, `DUMP`,
 `DISASM`, …) and returns its text — the escape hatch for anything without a dedicated tool.
@@ -202,6 +203,37 @@ run {input: "CAT\r", until: "+++"}               # a command, read the reply
 `\r` submits a FLEX line. `run` also returns on its own when the guest reaches a prompt
 (`stopped: "idle"`), so you rarely need to guess a timeout for interactive commands — set a
 generous `timeout_ms` only for long silent work (a disk load, a long assembly).
+
+**`from` is a JSON number, and JSON has no hex.** The `0xE0D0` above is shorthand; on the wire
+write the decimal value: `57552` for `E0D0`, `65496` for `FFD8`. A string such as `"0xE0D0"` is
+not a number, so the server refuses the call and tells you the number to send: `` `from` must be
+a JSON number, not a string: "0xE0D0" is 57552 ``. Every tool checks its arguments this way, so a
+wrong type or a missing required argument is an error, and never a silent 0.
+
+### Stopping a `run` early, and `status`
+
+A `run` ends by itself at `timeout_ms`. Two things stop it sooner, and both return
+`stopped: "interrupted"` with what the guest printed so far:
+
+- **Cancel the request.** Send the standard `notifications/cancelled` with the request id of the
+  `run`. The server reads its input while a `run` goes on, so it sees the cancel at once. A cancel
+  that names another request, or that arrives after the `run` returned, is ignored, and it never
+  applies to the next call. Other requests sent during a `run` wait, and are answered in order after
+  it returns.
+- **Send the process a `^C`** (`kill -INT`). The first `^C` is caught and only interrupts the `run`.
+  A second `^C` before the server has reported the first one ends the server. A server started in
+  the background, or with `nohup`, ignores `^C`.
+
+Either way the machine is left as it was, and the next `run` starts clean. A `^C` with no `run` in
+progress does nothing to the guest.
+
+**`status` never waits.** It is answered by the reader thread, not the worker, so it answers even
+while a `run` (or a long `monitor`, `mem_load` or `snapshot`) is in progress. It returns the board
+id, `in_flight` (whether the worker is busy on any request), and the `pc` and `steps` of the last
+`run`. Those two go stale: a `step` or a `monitor` command moves the real PC without changing them,
+and `steps` restarts at zero on the next `run`. `generation` is the one field that always climbs, so
+use it to tell "still advancing" from "stuck on the same slice". Poll `status` before you cancel, to
+see whether the `run` is still alive.
 
 ## Recipe: boot FLEX and work with the disk
 

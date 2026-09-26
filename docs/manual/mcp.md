@@ -40,7 +40,11 @@ through MCP:
   (a prompt like `+++`) appears, `from` to set the PC first (booting is `from` the ROM
   monitor's reset entry). It **also stops on its own when the guest reaches a prompt** — spinning on the
   console with nothing to say — so you get control back without guessing a timeout. Every
-  stop says why in `stopped`: `match`, `idle`, `timeout`, `steps`, `halt`, `breakpoint`.
+  stop says why in `stopped`: `match`, `idle`, `timeout`, `steps`, `halt`, `breakpoint`,
+  `unclaimed` (under `SET BUS UNCLAIMED=HALT`), `tape-stop` (a `BREAK TAPE STOP`), or
+  `interrupted` (see below). A `SET BUS UNCLAIMED=WARN` line, or any other bus or board
+  message from the run, comes back in `warnings`. JSON has no hex, so `from` is a decimal
+  number (`65496` for `FFD8`); a string such as `"0xFFD8"` is refused with the number to send.
 - **`send`** — type at the console without running (then `run` to let it be read).
 - **`recv`** — drain what the guest has printed since you last looked, without running.
 - **`regs`** — the CPU registers right now.
