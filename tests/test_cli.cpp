@@ -21,6 +21,7 @@
 #include "host/stream.h"
 #include "test.h"
 
+#include <algorithm>
 #include <memory>
 #include <atomic>
 #include <chrono>
@@ -1009,6 +1010,50 @@ void test_cli() {
         CHECK(aAt != std::string::npos, "the read-only property is listed");
         CHECK(cpu.find("values:", aAt) == std::string::npos,
               "a read-only property advertises no values line of its own");
+    }
+
+    // -----------------------------------------------------------------------
+    // SHOW BOARDS is the catalog: ONE line per board type, alphabetical, its summary, inside the
+    // monitor's 78 columns. The full description belongs to SHOW BOARD <type>. A summary
+    // too long for the column would wrap the whole list back to pages -- this is the check
+    // that stops the next board from doing that.
+    // -----------------------------------------------------------------------
+    SECTION("cli: SHOW BOARDS lists one line per board, A-Z; SHOW BOARD has the full text");
+    {
+        Machine mc;
+        Monitor monC(mc);
+        std::ostringstream o;
+        monC.exec("SHOW BOARDS", o);
+        std::vector<std::string> rows;
+        {
+            std::istringstream catalog(o.str());
+            for (std::string l; std::getline(catalog, l);) rows.push_back(l);
+        }
+        // Alphabetical by type name, not registry (build) order.
+        auto types = boardTypes();
+        std::sort(types.begin(), types.end(),
+                  [](const BoardType& x, const BoardType& y) { return x.name < y.name; });
+        // TYPE header + rule, a row per type, a blank, the SHOW BOARD footer.
+        CHECK(rows.size() == types.size() + 4, "one catalog row per board type");
+        for (const auto& l : rows) {
+            std::string why = "catalog line fits 78 columns: '" + l + "'";
+            CHECK(l.size() <= 78, why.c_str());
+        }
+        for (size_t i = 0; i < types.size() && i + 2 < rows.size(); ++i) {
+            const auto& t   = types[i];
+            const auto& row = rows[i + 2];
+            std::string why = "board '" + t.name + "' has a one-line summary on its row";
+            CHECK(!t.summary.empty() && t.summary.find('\n') == std::string::npos &&
+                      row.starts_with("  " + t.name + " ") && row.ends_with(t.summary),
+                  why.c_str());
+        }
+        CHECK(o.str().find("control/status at the slot base") == std::string::npos,
+              "the full description is not in the catalog");
+
+        std::ostringstream od;
+        monC.exec("SHOW BOARD mps", od);
+        CHECK(od.str().find("control/status at the slot base") != std::string::npos,
+              "SHOW BOARD <type> still prints the full description");
     }
 
     // -----------------------------------------------------------------------

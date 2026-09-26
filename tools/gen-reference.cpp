@@ -324,7 +324,7 @@ void boards(const std::string& dir) {
         if (group.empty()) continue;
         o << "**" << g << "**\n\n| Type | What it is |\n|---|---|\n";
         for (const auto& t : group)
-            o << "| [`" << t.name << "`](#" << t.name << ") | " << cell(t.description) << " |\n";
+            o << "| [`" << t.name << "`](#" << t.name << ") | " << cell(t.summary) << " |\n";
         o << "\n";
     }
 
@@ -599,7 +599,7 @@ void cheatsheet(const std::string& dir) {
                       [](const BoardType& a, const BoardType& b) { return a.name < b.name; });
             o << "**" << g << "**\n\n| Type | What it is |\n|---|---|\n";
             for (const auto& t : group)
-                o << "| `" << t.name << "` | " << cell(t.description) << " |\n";
+                o << "| `" << t.name << "` | " << cell(t.summary) << " |\n";
             o << "\n";
         }
     }

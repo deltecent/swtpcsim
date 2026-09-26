@@ -228,7 +228,7 @@ Everything a machine file can do to a board, you can do by hand.
 | Command | |
 |---|---|
 | `BOARDS` | what is in the backplane |
-| `SHOW BOARDS` | the board types you can add |
+| `SHOW BOARDS` | the board types you can add, one line each |
 | `SHOW BOARD <type>` | one type's description and its settings (add `UNITS` for just the units) |
 | `BOARDS ADD <type> <id>` | fit a board |
 | `BOARDS REMOVE <id>` | pull one out |

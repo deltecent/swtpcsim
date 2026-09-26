@@ -812,6 +812,7 @@ Json callTool(Machine& m, McpSession& sess, const std::string& name, const Json&
         for (const auto& t : boardTypes()) {
             Json j = Json::obj();
             j["name"] = Json(t.name);
+            j["summary"] = Json(t.summary);
             j["description"] = Json(t.description);
             auto b = makeBoard(t.name);
             j["properties"] = propsJson(b.get());
