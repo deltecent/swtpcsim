@@ -14,6 +14,19 @@ Clock::Handle Clock::at(uint64_t when, std::function<void()> fn) {
     return h;
 }
 
+Clock::~Clock() {
+    for (Clock** p : watchers_) *p = nullptr;
+}
+
+void Clock::watch(Clock** p) {
+    if (std::find(watchers_.begin(), watchers_.end(), p) == watchers_.end())
+        watchers_.push_back(p);
+}
+
+void Clock::unwatch(Clock** p) {
+    watchers_.erase(std::remove(watchers_.begin(), watchers_.end(), p), watchers_.end());
+}
+
 void Clock::cancel(Handle h) {
     // The heap entry stays as a tombstone. It is skipped when it surfaces, which
     // costs one hash lookup at a moment we were about to do one anyway -- cheaper

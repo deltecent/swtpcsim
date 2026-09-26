@@ -62,6 +62,12 @@ class StateReader;
 
 class Clock {
 public:
+    Clock() = default;
+    ~Clock();
+    // Not copyable: the watchers below hold the address of THIS clock.
+    Clock(const Clock&)            = delete;
+    Clock& operator=(const Clock&) = delete;
+
     // A scheduled thing, cancellable. AN INTEGER AND NOT A POINTER, on purpose:
     // a handle that outlives its event is then merely stale, and cancelling it is
     // a no-op instead of a use-after-free. Handles are never reused.
@@ -96,6 +102,15 @@ public:
     // Cancelling kNone, or a handle that has already fired, is legal and does
     // nothing. Boards re-arm constantly and should not have to track which.
     void cancel(Handle h);
+
+    // A HOLDER OF A `Clock*` REGISTERS THE POINTER, AND THE CLOCK NULLS IT ON THE WAY OUT.
+    // A board's destructor cancels its pending wake -- the lambda has `this` in it -- so it
+    // needs the clock alive, or knowing that it is not. A Machine declares its clock first,
+    // so the clock always outlives the boards; anything built by hand (a test) may not. With
+    // this, destruction order is simply not a question: the pointer is either valid or null.
+    // unwatch() of a pointer never watched is a no-op.
+    void watch(Clock** p);
+    void unwatch(Clock** p);
     bool pending(Handle h) const;
 
     // The crystal on the CPU card. Defaults to the 88-CPU's 2 MHz so that a
@@ -202,6 +217,8 @@ private:
     long long hz_  = 2000000;   // the DIVISOR. Never 0. See setHz().
     bool     free_ = true;      // ...and by default we do not pace against it.
     bool     idle_ = true;      // ...but we DO stand down when the guest is only waiting.
+
+    std::vector<Clock**> watchers_;  // see watch()
 };
 
 } // namespace swtpc

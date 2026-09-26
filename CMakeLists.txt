@@ -47,18 +47,10 @@ endif()
 # ---------------------------------------------------------------------------
 # SANITIZE -- AddressSanitizer + UndefinedBehaviorSanitizer, in one flag.
 #
-# This is the LOCAL ORACLE for the lifetime bugs that only crash on Windows. Twice
-# now (the SNAPSHOT 0xC0000409, then the VersaFloppy FDC test) the `unit` suite has
-# SEGFAULTed on Windows CI while Mac and Linux stayed green -- because the macOS
-# allocator silently tolerates a use-after-scope that MSVC's does not. The cause each
-# time was a board/chip test whose locals destroy in the wrong order: the Clock dies
-# first, then the board's destructor calls clock_->cancel() on freed memory. No
-# compiler warning fires; only a sanitizer names the exact file:line.
-#
-# Reproducing that used to be a hand-typed recipe -- a fresh build dir, an explicit
-# generator, and the -fsanitize flags threaded through BOTH CMAKE_CXX_FLAGS and
-# CMAKE_EXE_LINKER_FLAGS. This is that recipe as one word. Configure a side tree with
-# it and the whole binary (library, tools, tests) is instrumented:
+# For memory and undefined-behaviour bugs that one platform's allocator hides and another's
+# does not -- a use-after-free that is harmless on macOS can crash only on Windows. No
+# compiler warning fires for those; a sanitizer names the exact file:line. Configure a side
+# tree with it and the whole binary (library, tools, tests) is instrumented:
 #
 #   cmake -S . -B build-asan -DSANITIZE=on
 #   cmake --build build-asan --target swtpc_tests
@@ -66,8 +58,8 @@ endif()
 #
 # Keep it in its OWN build directory -- an instrumented binary is slower and is not
 # what you ship. It is deliberately NOT on by default and NOT wired into CI: CI catches
-# the Windows crash by running on Windows, and this is the tool you reach for once it
-# does. On a board/chip lifetime change, run it before merging.
+# a platform-only crash by running on that platform, and this is the tool you reach for
+# once it does.
 #
 # GCC/Clang get both sanitizers. MSVC has had /fsanitize=address since VS2019 and it
 # catches the same use-after-free class, so honour the flag there too -- it just has no
