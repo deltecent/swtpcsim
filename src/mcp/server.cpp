@@ -1098,6 +1098,22 @@ Json callTool(Machine& m, McpSession& sess, const std::string& name, const Json&
         mon.setMcpMode(true);  // RUN parks instead of blocking -- a bare RUN (or the RUN a
                                // CONFIG LOAD startup ends in) would otherwise wedge the server.
         mon.exec(args.at("command").str(), os);
+
+        // A monitor command can swap the console out from under us: CONFIG LOAD replaces
+        // every board (and with them the scripted line and any --mirror listener), CONNECT
+        // can re-wire the console unit. Re-adopt it NOW rather than on the next send/recv/
+        // run -- otherwise the mirror port is closed meanwhile, and a `step` would run the
+        // guest with its console aimed at our JSON-RPC stdin (issue #481). Idempotent when
+        // nothing changed. Losing a console we held (the mirror port taken, a machine with
+        // no console line) is said once on stderr, as at startup -- never on `out`.
+        std::string conErr;
+        const bool  hadConsole = !sess.conBoard.empty();
+        if (!console(m, sess, conErr)) {
+            if (hadConsole && !conErr.empty())
+                std::cerr << "altairsim: --mcp console lost: " << conErr << "\n";
+            sess.conBoard.clear();
+            sess.conUnit.clear();
+        }
         return textResult(os.str().empty() ? "(ok)" : os.str(), mon.failed());
     }
 

@@ -1,5 +1,6 @@
 #include "test.h"
 
+#include "cli/monitor.h"
 #include "core/board.h"
 #include "core/machine.h"
 #include "core/machines.h"
@@ -290,6 +291,58 @@ void test_mcp() {
             CHECK(seen.find(kMon680ExamineEcho) != std::string::npos,
                   "the watcher's typed command was executed by the guest, examine came back down the socket");
         }
+    }
+
+    SECTION("MCP: CONFIG LOAD via the monitor tool re-adopts the console and --mirror at once");
+    {
+        // Issue #481: CONFIG LOAD replaces every board, destroying the scripted console line
+        // and the --mirror listener riding on it. Only send/recv/run re-adopted the console,
+        // so until one of those ran the mirror port was closed and the new console unit was
+        // back on the host console -- the JSON-RPC stdin. The monitor tool must re-adopt it
+        // itself, before the next tool call of any kind.
+        Machine m;
+        if (!loadAltair680(m)) return;
+        std::string err;
+
+        const std::string toml = tmpPath("swtpc_mcp_reload.toml");
+        {
+            Monitor mon(m);
+            std::ostringstream os;
+            mon.exec("CONFIG SAVE " + toml, os);
+            CHECK(!mon.failed(), ("CONFIG SAVE writes the machine: " + os.str()).c_str());
+        }
+
+        uint16_t port = freePort();
+        CHECK(port != 0, "the OS hands us a free port");
+        const std::string mirror = "socket:" + std::to_string(port);
+
+        std::ostringstream s;
+        s << R"({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})" << "\n";
+        s << R"({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"monitor",)"
+          << R"("arguments":{"command":)" << Json("CONFIG LOAD " + toml).dump() << "}}}\n";
+        auto rep = runScript(m, s.str(), mirror);
+
+        CHECK(rep.count(2) && !rep[2].at("result").has("isError"),
+              "CONFIG LOAD through the monitor tool succeeded");
+
+        // No send/recv/run was called, yet the console is ours again, mirror and all.
+        ScriptedStream* inner = nullptr;
+        MirrorStream*   mir   = consoleMirror(m, &inner);
+        CHECK(mir != nullptr, "the reloaded machine's console is wrapped in the mirror again");
+        CHECK(inner != nullptr, "over the scripted line the tools drive, not the host console");
+
+        // And the port is listening: a watcher can dial in right away.
+        if (mir) {
+            auto client = platform::connectTcp("127.0.0.1", port, err);
+            CHECK(client != nullptr, ("a watcher dials in after the reload: " + err).c_str());
+            bool up = waitFor([&] {
+                m.pump();
+                if (client) client->poll();
+                return client && client->established();
+            });
+            CHECK(up, "the mirror accepts a connection with no send/recv/run in between");
+        }
+        std::filesystem::remove(toml);
     }
 
     SECTION("MCP: the console stand-in carries the machine's [console] transforms");
