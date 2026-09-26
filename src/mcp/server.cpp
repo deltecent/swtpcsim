@@ -4,6 +4,7 @@
 #include "boards/registry.h"
 #include "cli/monitor.h"
 #include "core/crc32.h"
+#include "core/debug.h"
 #include "core/hex.h"
 #include "core/roms.h"
 #include "core/version.h"
@@ -176,8 +177,10 @@ Json toolList() {
                        "Advance the running guest a bounded slice and return what it printed to "
                        "the console. STOPS on: `until` matched, a prompt reached (the guest is "
                        "spinning on console input with nothing to say), timeout_ms, max_steps, a "
-                       "HLT, or a breakpoint -- reported in `stopped`. This is the expect loop: "
-                       "type a command with `input`, read the reply, call again. Never blocks.",
+                       "HLT, a breakpoint, or a SIGINT to the altairsim process itself (an "
+                       "out-of-band ^C -- there is no in-band way to interrupt a call yet) -- "
+                       "reported in `stopped`. This is the expect loop: type a command with "
+                       "`input`, read the reply, call again. Never blocks.",
                        p, {}));
     }
     {
@@ -956,6 +959,12 @@ Json callTool(Machine& m, McpSession& sess, const std::string& name, const Json&
         CpuCore* cpu = m.cpu();
         if (!cpu) return textResult("no CPU in this machine", true);
 
+        // A ^C between calls (after the previous one already returned, or one that
+        // landed while some other tool was running) must not carry into THIS call and
+        // kill it on the first slice -- only a ^C that arrives WHILE this run is in
+        // flight should stop it. Clear before doing anything else.
+        Debugger::clearInterrupt();
+
         if (args.has("from")) cpu->setPc((uint16_t)args.at("from").integer());
         if (args.has("input")) con->feed(args.at("input").str());
 
@@ -1052,9 +1061,10 @@ Json callTool(Machine& m, McpSession& sess, const std::string& name, const Json&
             const bool received = m.rxBytes() != rxBefore;
             const uint64_t hungry = con->hungry() - hungryBefore;
 
-            if (r.why == StopReason::Halted)     { stopped = "halt";       break; }
-            if (r.why == StopReason::Breakpoint) { stopped = "breakpoint"; break; }
-            if (r.why == StopReason::NoCpu)      { stopped = "no-cpu";      break; }
+            if (r.why == StopReason::Halted)      { stopped = "halt";        break; }
+            if (r.why == StopReason::Breakpoint)  { stopped = "breakpoint";  break; }
+            if (r.why == StopReason::NoCpu)       { stopped = "no-cpu";      break; }
+            if (r.why == StopReason::Interrupted) { stopped = "interrupted"; break; }
 
             // IDLE-STOP -- hand control back when the guest has nothing to do, so the AI is not
             // made to wait out timeout_ms for its next command. Gated on clock.idle() like
@@ -1532,6 +1542,14 @@ int runMcp(Machine& m, std::istream& in, std::ostream& out, const std::string& m
     // tool call retries and surfaces the same error to the client.
     if (!mirror.empty() && !bindErr.empty())
         std::cerr << "swtpcsim: --mirror " << mirror << " failed: " << bindErr << "\n";
+
+    // ^C AS AN OUT-OF-BAND STOP for a wedged `run` (#488): this server's stdin IS the
+    // JSON-RPC channel, so there is no spare keyboard byte for ATTN the way an
+    // interactive session has one, and the server does not (yet) read stdin at all
+    // while a tool call is in flight -- see SigintGuard (core/debug.h) for why this is
+    // the same fix as a piped monitor RUN's ^C. Installed for the whole session, not
+    // just one call, and restored on return so nothing outlives this function.
+    SigintGuard sigintGuard;
 
     std::string line;
     while (std::getline(in, line)) {

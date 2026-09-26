@@ -14,6 +14,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <csignal>
 #include <filesystem>
 #include <map>
 #include <sstream>
@@ -608,6 +609,54 @@ void test_mcp() {
                "ms; the pre-#487 grace would have run past 1500ms of writes plus a further "
                "5s of post-traffic silence)")
                   .c_str());
+    }
+
+    SECTION("MCP: a SIGINT to the process interrupts a wedged run (#488)");
+    {
+        // #488: `--mcp`'s stdin IS the JSON-RPC channel, so a caller has no in-band way to
+        // stop a run that will not reach `until`/idle/timeout on its own -- unlike a piped
+        // monitor RUN, which already had SigintGuard (core/debug.h). Proves the guard is now
+        // installed for the whole of runMcp too: an interrupt lands mid-call (simulated with
+        // std::raise, the portable way to invoke the currently-installed handler without
+        // depending on OS-level signal delivery -- the handler itself, and the atomic flag it
+        // sets, are exactly what a real SIGINT would drive) and the run returns almost at once
+        // with stopped:"interrupted", nowhere near its multi-second budget. The trailing run
+        // also proves `Debugger::clearInterrupt()` at the top of each call means the flag does
+        // not bleed into the next one.
+        Machine m;
+        if (!loadAltair680(m)) return;
+        std::ostringstream s;
+        int id = 0;
+        auto req = [&](const std::string& params) {
+            s << R"({"jsonrpc":"2.0","id":)" << ++id
+              << R"(,"method":"tools/call","params":)" << params << "}\n";
+        };
+        req(R"({"name":"run","arguments":{"from":65496,"until":".","timeout_ms":4000}})");
+        req(R"({"name":"monitor","arguments":{"command":"SET cpu0 idle=off"}})");
+        req(R"({"name":"run","arguments":{"timeout_ms":4000}})");  // the call under test
+        req(R"({"name":"run","arguments":{"timeout_ms":500}})");   // stale-flag check
+
+        std::thread interruptor([] {
+            std::this_thread::sleep_for(std::chrono::milliseconds(150));
+            std::raise(SIGINT);
+        });
+
+        const auto t0  = std::chrono::steady_clock::now();
+        auto       rep = runScript(m, s.str());
+        const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::steady_clock::now() - t0)
+                                    .count();
+        interruptor.join();
+
+        CHECK(rep[3].at("result").at("structuredContent").at("stopped").str() == "interrupted",
+              "the 4000ms-budget run stops on the SIGINT, not idle or timeout");
+        CHECK(elapsedMs < 1500,
+              ("the interrupt landed well inside the 4000ms budget (took " +
+               std::to_string(elapsedMs) + "ms)")
+                  .c_str());
+        CHECK(rep[4].at("result").at("structuredContent").at("stopped").str() == "timeout",
+              "clearInterrupt() means the next run() does not inherit a stale flag -- idle=off "
+              "still set, so it runs its own budget out exactly like the no-interrupt case");
     }
 
     SECTION("MCP: mem_fill, mem_search and mem_save round-trip through the bus");

@@ -30,7 +30,6 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
-#include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -1437,32 +1436,12 @@ static void reportStop(const RunResult& r, const Debugger& dbg, std::ostream& ou
 //      twenty times too fast and every timing-dependent thing on the screen --
 //      a cursor, a banner, a Teletype's pace -- would be a lie.
 // ---------------------------------------------------------------------------
+// ^C -- SigintGuard is defined in core/debug.h (shared with the --mcp server,
+// which installs it around the whole of runMcp for the same "no ISIG, no ATTN"
+// reason: its stdin is the JSON-RPC channel, not a keyboard). See there for why.
 // ---------------------------------------------------------------------------
-// ^C.
-//
-// The handler does ONE thing: set a lock-free flag. It does not print, it does
-// not touch the machine, and it does not throw -- those are all undefined in a
-// signal handler, and the bug they produce is a hang or a corrupted heap once in
-// a hundred runs, which is the worst kind there is.
-//
-// It is installed only for the duration of a RUN or a STEP, and the previous
-// handler is put back afterwards, so ^C at the monitor prompt still kills the
-// process exactly as it did before there was a CPU.
-//
-// ON A TERMINAL IT NEVER FIRES, and that is deliberate (Patrick, 2026-07-12): raw
-// mode clears ISIG, because Ctrl-C is a byte CP/M is entitled to read. ATTN is the
-// stop key. This guard is what is left for a PIPED run, where there is no raw mode
-// and no ATTN, and the signal is the only way to stop a program that never ends.
-// ---------------------------------------------------------------------------
-static void onSigint(int) { Debugger::interrupt(); }
 
 namespace {
-struct SigintGuard {
-    void (*prev)(int) = nullptr;
-    SigintGuard() { prev = std::signal(SIGINT, onSigint); }
-    ~SigintGuard() { std::signal(SIGINT, prev); }
-};
-
 // The opcodes NEXT steps OVER instead of into: a subroutine call leaves a return
 // address to stop at, so NEXT runs to it. On the 6800 the calls are JSR (extended
 // BD, indexed AD) and BSR (relative 8D) -- each stacks the address of the following

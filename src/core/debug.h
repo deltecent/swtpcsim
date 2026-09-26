@@ -21,6 +21,7 @@
 #include "core/expr.h"
 
 #include <array>
+#include <csignal>
 #include <cstdint>
 #include <memory>
 #include <ostream>
@@ -362,6 +363,20 @@ private:
 
     // STEP-OVER's internal one-shot PC target, or -1 for none. See setStepTarget.
     int stepTarget_ = -1;
+};
+
+// ^C AS AN OUT-OF-BAND STOP for a run with no other way to interrupt it -- a piped
+// monitor session (no raw terminal, so no ISIG, and no ATTN either), and an `--mcp`
+// server, whose stdin is the JSON-RPC channel itself, not a keyboard `run` can poll
+// for ATTN on. Install for exactly the span that should honour ^C this way (a RUN, a
+// STEP, or the whole of runMcp) and the previous handler comes back on scope exit, so
+// ^C at an ordinary prompt still kills the process exactly as it always did. The
+// handler itself does the one thing a signal handler is allowed to do -- flip an
+// atomic flag (Debugger::interrupt) -- nothing else runs on the signal thread.
+struct SigintGuard {
+    void (*prev)(int) = nullptr;
+    SigintGuard() { prev = std::signal(SIGINT, [](int) { Debugger::interrupt(); }); }
+    ~SigintGuard() { std::signal(SIGINT, prev); }
 };
 
 } // namespace swtpc
