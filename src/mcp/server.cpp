@@ -1042,7 +1042,15 @@ Json callTool(Machine& m, McpSession& sess, const std::string& name, const Json&
             // clock_hz set, most of this loop's wall time is the pacing sleep below -- would be
             // wiped by the very call meant to report it. Measured before this check: five of
             // eight ^Cs swallowed at clock_hz=2000000.
-            if (Debugger::interrupted()) { stopped = "interrupted"; break; }
+            if (Debugger::interrupted()) {
+                // CONSUME it: reporting it to the client is what "handled" means. Leave it
+                // standing and the next ^C -- the one that means "I said stop" -- would find
+                // an unconsumed flag and kill the process (SigintGuard, core/debug.h) even
+                // though this one was heard and answered.
+                Debugger::clearInterrupt();
+                stopped = "interrupted";
+                break;
+            }
             if (clk::now() >= deadline) { stopped = "timeout"; break; }
             if (maxSteps && steps >= maxSteps) { stopped = "steps"; break; }
 
@@ -1070,7 +1078,8 @@ Json callTool(Machine& m, McpSession& sess, const std::string& name, const Json&
             if (r.why == StopReason::Halted)      { stopped = "halt";        break; }
             if (r.why == StopReason::Breakpoint)  { stopped = "breakpoint";  break; }
             if (r.why == StopReason::NoCpu)       { stopped = "no-cpu";      break; }
-            if (r.why == StopReason::Interrupted) { stopped = "interrupted"; break; }
+            if (r.why == StopReason::Interrupted) { Debugger::clearInterrupt();
+                                                    stopped = "interrupted"; break; }
 
             // IDLE-STOP -- hand control back when the guest has nothing to do, so the AI is not
             // made to wait out timeout_ms for its next command. Gated on clock.idle() like

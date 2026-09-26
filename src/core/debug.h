@@ -378,13 +378,26 @@ private:
 // server, whose stdin is the JSON-RPC channel itself, not a keyboard `run` can poll
 // for ATTN on. Install for exactly the span that should honour ^C this way (a RUN, a
 // STEP, or the whole of runMcp) and the previous handler comes back on scope exit, so
-// ^C at an ordinary prompt still kills the process exactly as it always did. The
-// handler itself does the one thing a signal handler is allowed to do -- flip an
-// atomic flag (Debugger::interrupt) -- nothing else runs on the signal thread.
-struct SigintGuard {
-    void (*prev)(int) = nullptr;
-    SigintGuard() { prev = std::signal(SIGINT, [](int) { Debugger::interrupt(); }); }
-    ~SigintGuard() { std::signal(SIGINT, prev); }
+// ^C at an ordinary prompt still kills the process exactly as it always did.
+//
+// A SECOND ^C KILLS. The first sets the flag and the run stops on it; but an `--mcp`
+// server holds this guard for its whole session, not for one call, so without that
+// rule a ^C at a server sitting idle -- or at one wedged somewhere the flag is never
+// read -- would be swallowed, and the process could not be stopped from the keyboard
+// at all. So the handler checks whether a previous interrupt is STILL unconsumed: if
+// it is, it puts the default disposition back and re-raises, and the process dies the
+// way the operator plainly meant. Everything it does is what a handler is allowed to
+// do -- an atomic flag, signal(), raise() -- and nothing else runs on that thread.
+class SigintGuard {
+  public:
+    SigintGuard();
+    ~SigintGuard();
+    SigintGuard(const SigintGuard&)            = delete;
+    SigintGuard& operator=(const SigintGuard&) = delete;
+
+  private:
+    void (*prev_)(int) = nullptr;
+    bool installed_    = false;  // false: SIGINT was inherited ignored -- we left it that way
 };
 
 } // namespace swtpc

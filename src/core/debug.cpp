@@ -1,5 +1,7 @@
 #include "core/debug.h"
 
+#include <csignal>
+
 #include "core/machine.h"
 #include "cpu/cpu.h"
 
@@ -18,6 +20,46 @@ static std::atomic<bool> g_interrupt{false};
 void Debugger::interrupt() { g_interrupt.store(true); }
 void Debugger::clearInterrupt() { g_interrupt.store(false); }
 bool Debugger::interrupted() { return g_interrupt.load(); }
+
+// See SigintGuard in debug.h for the whole reasoning, including why the second ^C
+// has to kill. `g_prevSigint` is read only by the handler and written only when a
+// guard is constructed or destroyed, which never happens while one is in flight.
+static void (*g_prevSigint)(int) = nullptr;
+
+static void onSigint(int sig) {
+    if (g_interrupt.exchange(true)) {
+        // The previous one was never consumed -- this operator is not being heard. Die the
+        // way they meant: the default disposition, not whatever was installed before us.
+        std::signal(sig, SIG_DFL);
+        std::raise(sig);
+    }
+}
+
+// IF IT WAS IGNORED, LEAVE IT IGNORED -- the same POSIX idiom, and for the same reason,
+// as armSignalHandlers() in platform/posix/terminal_posix.cpp. A process started in the
+// BACKGROUND or under `nohup` inherits SIGINT already set to SIG_IGN, precisely so a ^C
+// meant for the foreground job cannot reach it; SIG_IGN survives exec. Installing over
+// that would make `nohup altairsim … --mcp &` answerable to a keystroke aimed at
+// something else -- and, with the second-^C rule above, killable by one. (Found exactly
+// that way: a test script launched the server as a background job, so the guard's "previous
+// handler" was SIG_IGN and the kill path restored *ignore* -- the process could not be
+// stopped by any number of ^Cs.)
+SigintGuard::SigintGuard() {
+    prev_ = std::signal(SIGINT, onSigint);
+    if (prev_ == SIG_IGN) {          // detached: put it back and stay out of the way
+        std::signal(SIGINT, SIG_IGN);
+        installed_ = false;
+        return;
+    }
+    installed_   = true;
+    g_prevSigint = prev_;
+}
+
+SigintGuard::~SigintGuard() {
+    if (!installed_) return;
+    std::signal(SIGINT, prev_);
+    g_prevSigint = nullptr;
+}
 
 const char* breakKindName(BreakKind k) {
     switch (k) {
