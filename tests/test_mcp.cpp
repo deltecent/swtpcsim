@@ -659,6 +659,42 @@ void test_mcp() {
               "still set, so it runs its own budget out exactly like the no-interrupt case");
     }
 
+    SECTION("MCP: a SIGINT is not lost in the pacing sleep between slices (#488)");
+    {
+        // The case the flat-out test above cannot see. With a clock_hz set, `run` sleeps
+        // between slices to pace the crystal, so most of its wall time is spent OUTSIDE
+        // Debugger::run() -- and run() clears the interrupt flag as it enters. Before the
+        // Debugger::interrupted() check at the top of the loop, a ^C landing in that sleep
+        // was wiped by the next slice: five of eight trials here returned `timeout` having
+        // ignored the signal outright. Repeat the trial, because "usually stops" is exactly
+        // the bug -- a cancellation that works two times in three is not a cancellation.
+        for (int trial = 0; trial < 6; ++trial) {
+            Machine m;
+            if (!loadAltair680(m)) return;
+            std::ostringstream s;
+            int id = 0;
+            auto req = [&](const std::string& params) {
+                s << R"({"jsonrpc":"2.0","id":)" << ++id
+                  << R"(,"method":"tools/call","params":)" << params << "}\n";
+            };
+            req(R"({"name":"run","arguments":{"from":65496,"until":".","timeout_ms":4000}})");
+            req(R"({"name":"monitor","arguments":{"command":"SET cpu0 idle=off"}})");
+            req(R"({"name":"monitor","arguments":{"command":"SET cpu0 clock_hz=2000000"}})");
+            req(R"({"name":"run","arguments":{"timeout_ms":3000}})");  // the call under test
+
+            std::thread interruptor([] {
+                std::this_thread::sleep_for(std::chrono::milliseconds(200));
+                std::raise(SIGINT);
+            });
+            auto rep = runScript(m, s.str());
+            interruptor.join();
+
+            CHECK(rep[4].at("result").at("structuredContent").at("stopped").str() == "interrupted",
+                  ("a paced run stops on the SIGINT every time, not just when it happens to "
+                   "land inside a slice (trial " + std::to_string(trial) + ")").c_str());
+        }
+    }
+
     SECTION("MCP: mem_fill, mem_search and mem_save round-trip through the bus");
     {
         Machine m;

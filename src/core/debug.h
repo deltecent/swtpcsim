@@ -275,6 +275,14 @@ public:
     static void interrupt();
     static void clearInterrupt();
 
+    // Is one pending RIGHT NOW? run() clears the flag on entry, so a caller that
+    // drives run() in SLICES cannot learn from the slice alone that an interrupt
+    // arrived between two of them -- the next slice wipes it first. Such a caller
+    // asks here at the top of its own loop instead; see the --mcp run tool, which
+    // sleeps between slices to pace a clock and would otherwise lose every ^C that
+    // landed in the sleep.
+    static bool interrupted();
+
 private:
     bool armObserver();
     void disarmObserver();

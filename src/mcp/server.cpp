@@ -1037,6 +1037,12 @@ Json callTool(Machine& m, McpSession& sess, const std::string& name, const Json&
         for (;;) {
             drain();
             if (!until.empty() && out.find(until) != std::string::npos) { stopped = "match"; break; }
+            // ASK BEFORE THE SLICE, not just after it. Debugger::run() clears the flag as it
+            // enters, so an interrupt that arrived since the last slice returned -- and with a
+            // clock_hz set, most of this loop's wall time is the pacing sleep below -- would be
+            // wiped by the very call meant to report it. Measured before this check: five of
+            // eight ^Cs swallowed at clock_hz=2000000.
+            if (Debugger::interrupted()) { stopped = "interrupted"; break; }
             if (clk::now() >= deadline) { stopped = "timeout"; break; }
             if (maxSteps && steps >= maxSteps) { stopped = "steps"; break; }
 

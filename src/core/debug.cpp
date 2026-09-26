@@ -17,6 +17,7 @@ static std::atomic<bool> g_interrupt{false};
 
 void Debugger::interrupt() { g_interrupt.store(true); }
 void Debugger::clearInterrupt() { g_interrupt.store(false); }
+bool Debugger::interrupted() { return g_interrupt.load(); }
 
 const char* breakKindName(BreakKind k) {
     switch (k) {
