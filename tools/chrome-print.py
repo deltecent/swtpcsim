@@ -36,6 +36,7 @@ import sys
 import time
 import urllib.request
 
+START_TIMEOUT = 60.0   # seconds for Chrome to come up and list the page (a healthy start: a few)
 DONE_TIMEOUT = 120.0   # seconds of REAL time to let Paged.js paginate before giving up
 POLL = 0.1
 
@@ -133,17 +134,27 @@ def main():
     html = os.path.abspath(html)
     url = "file://" + html
 
-    # A private profile and an ephemeral port so parallel builds never collide.
+    # A private profile so parallel builds never collide. The debugging port is 0: Chrome picks
+    # a free one itself and writes it to <profile>/DevToolsActivePort. Picking the port here and
+    # handing Chrome the number left a gap in which another process could take it (issue #554).
+    # build-docs.sh prints every recipe and example through the same readme.pdf, so the profile
+    # can be one a previous Chrome used: remove its DevToolsActivePort, or we read a dead port.
     profile = pdf + ".chrome-profile"
-    port = _free_port()
-    proc = subprocess.Popen(
-        [chrome, "--headless=new", "--disable-gpu", "--no-sandbox",
-         "--remote-debugging-port=%d" % port,
-         "--user-data-dir=" + profile, url],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
+    os.makedirs(profile, exist_ok=True)
     try:
-        ws_url = _wait_for_target(port, html)
+        os.remove(os.path.join(profile, "DevToolsActivePort"))
+    except FileNotFoundError:
+        pass
+    errlog = os.path.join(profile, "chrome-stderr.log")
+    with open(errlog, "wb") as err:
+        proc = subprocess.Popen(
+            [chrome, "--headless=new", "--disable-gpu", "--no-sandbox",
+             "--remote-debugging-port=0",
+             "--user-data-dir=" + profile, url],
+            stdout=subprocess.DEVNULL, stderr=err,
+        )
+    try:
+        ws_url = _wait_for_target(proc, profile, html, errlog)
         ws = WS(ws_url)
         _drive(ws, pdf)
     finally:
@@ -154,28 +165,55 @@ def main():
             proc.kill()
 
 
-def _free_port():
-    s = socket.socket()
-    s.bind(("127.0.0.1", 0))
-    p = s.getsockname()[1]
-    s.close()
-    return p
-
-
-def _wait_for_target(port, html_path):
+def _wait_for_target(proc, profile, html_path, errlog):
+    # Three stages, and a failure names the one it reached: Chrome writes DevToolsActivePort,
+    # its /json endpoint answers, and /json lists the page for our file.
     base = os.path.basename(html_path)
-    deadline = time.time() + 30
+    portfile = os.path.join(profile, "DevToolsActivePort")
+    port = None
+    stage = "Chrome never wrote " + portfile
+    deadline = time.time() + START_TIMEOUT
     while time.time() < deadline:
+        code = proc.poll()
+        if code is not None:
+            _die_start("Chrome exited (code %d) before the page target appeared; %s"
+                       % (code, stage), errlog)
         try:
-            raw = urllib.request.urlopen("http://127.0.0.1:%d/json" % port, timeout=2).read()
-            for tgt in json.loads(raw):
-                if tgt.get("type") == "page" and base in tgt.get("url", ""):
-                    if tgt.get("webSocketDebuggerUrl"):
-                        return tgt["webSocketDebuggerUrl"]
-        except Exception:
+            if port is None:
+                with open(portfile) as fh:
+                    first = fh.readline().strip()
+                if first.isdigit():
+                    port = int(first)
+                    stage = "no answer from http://127.0.0.1:%d/json" % port
+            if port is not None:
+                raw = urllib.request.urlopen("http://127.0.0.1:%d/json" % port, timeout=2).read()
+                targets = json.loads(raw)
+                for tgt in targets:
+                    if tgt.get("type") == "page" and base in tgt.get("url", ""):
+                        if tgt.get("webSocketDebuggerUrl"):
+                            return tgt["webSocketDebuggerUrl"]
+                stage = "/json lists no page for %s; it lists %s" % (
+                    base, json.dumps([(t.get("type"), t.get("url")) for t in targets]))
+        except FileNotFoundError:
             pass
+        except Exception as e:
+            if port is not None:
+                stage = "no answer from http://127.0.0.1:%d/json (last error: %s)" % (port, e)
         time.sleep(POLL)
-    die("Chrome never exposed the page target on the debugging port")
+    _die_start("Chrome never exposed the page target within %.0fs; %s" % (START_TIMEOUT, stage),
+               errlog)
+
+
+def _die_start(msg, errlog):
+    # Chrome's own stderr is the only record of why it did not come up; show its tail.
+    try:
+        with open(errlog, "rb") as fh:
+            tail = fh.read().decode("utf-8", "replace").splitlines()[-20:]
+    except OSError:
+        tail = []
+    if tail:
+        msg += "\nChrome's stderr (last %d lines):\n  " % len(tail) + "\n  ".join(tail)
+    die(msg)
 
 
 def _drive(ws, pdf):
