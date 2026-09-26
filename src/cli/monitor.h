@@ -31,6 +31,12 @@ public:
     // Read-eval-print. `echo` prints each command first, for -c scripts.
     int repl(std::istream& in, std::ostream& out, bool interactive);
 
+    // Run a `-s` script: repl() over the file's lines, with the file's own directory as
+    // the base for every path in them -- exactly as DO roots a DO file's lines (#575).
+    // `file` is where the caller opened it; it names the directory and guards against a
+    // script that DOes itself.
+    int runScript(std::istream& in, const std::string& file, std::ostream& out);
+
     // Tab completion (DESIGN.md 10.4). Given the command line up to the cursor, return the
     // candidates for the word being typed -- command names, then a board id, then that
     // board's property names, then a property's legal values -- all off the same

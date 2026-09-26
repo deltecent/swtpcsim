@@ -64,7 +64,8 @@ static void usage(std::ostream& o) {
          "  -n, --none         empty backplane. No boards, no memory, nothing.\n"
          "  -l, --list         list the built-in machines and exit.\n"
          "\n"
-         "  -s, --script <f>   run a command script, then exit with its status.\n"
+         "  -s, --script <f>   run a command script, then exit with its status. Paths in\n"
+         "                     it are relative to the script's folder.\n"
          "  -x, --exec <cmd>   run one monitor command (repeatable), then exit.\n"
          "  -i, --interactive  after --script/--exec, stay in the monitor.\n"
          "\n"
@@ -405,13 +406,12 @@ int main(int argc, char** argv) {
             std::cerr << "cannot open '" << script << "'\n";
             return 2;
         }
-        // -x and -s are the same thing (see above): commands given on the command line,
-        // run against the machine. Their paths root at the MACHINE's directory, exactly as
-        // what you type at the prompt does -- not at the script's own folder, which is what
-        // DO is for (a path written in a DO file is relative to that file). For a built-in
-        // machine that base is the launch directory, so a repo-relative test script run
-        // from the repo root resolves as it always has.
-        rc = mon.repl(f, std::cout, false);
+        // The script FILE is a command-line argument, so it is named from where you
+        // launched, like the machine file. The paths WRITTEN IN it are relative to the
+        // script's own folder -- a path written in a file is relative to that file, as in
+        // DO and a startup list -- so a shipped .ini runs from anywhere (#575). -x is the
+        // other kind: typed commands, rooted at the machine's directory.
+        rc = mon.runScript(f, script, std::cout);
         ran = true;
     }
 

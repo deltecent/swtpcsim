@@ -20,9 +20,9 @@ swtpcsim [options] [machine]
 | `-f, --file <path>` | **always** a file — never a built-in name |
 | `-n, --none` | an empty backplane. No boards, no memory, nothing |
 | `-l, --list` | list the built-in machines and exit |
-| `-s, --script <file>` | run a command script, then exit with its status |
-| `-x, --exec <cmd>` | run one monitor command, then exit. Repeatable |
-| `-i, --interactive` | after `--script`/`--exec`, stay in the monitor |
+| `-s, --script <file>` | run a command script, then exit with its status. Paths in it are relative to the script's folder |
+| `-x, --exec <cmd>` | run one monitor command, then exit. You can give it more than one time |
+| `-i, --interactive` | after `--script` or `--exec`, stay in the monitor |
 | `--mcp` | run as an MCP server on stdio |
 | `-v, --version` | print the version and exit |
 | `-h, --help` | print this help and exit |
@@ -147,9 +147,13 @@ sentence:
 > **A relative path resolves against the machine's directory** — the folder the machine file
 > was loaded from.
 
-That folder is the base for *everything*: the disks and PROMs the machine file itself mounts,
-**and** the `MOUNT`, `LOAD`, `SAVE`, `DO` and `-s` paths you type at the prompt. One directory,
-one answer, whether the path was written by the file's author or by you.
+That folder is the base for the disks and PROMs that the machine file mounts. It is also the
+base for the `MOUNT`, `LOAD`, `SAVE` and `DO` paths that you type. The rule is the same for a
+path in the file and a path that you type.
+
+A **script** follows the same idea. A path in a script is relative to the script's folder, as a
+path in a machine file is relative to the machine file. This is true for a script that you run
+with `DO` and for a script that you run with `-s`.
 
 When `examples/flex/flex2-40.toml` says `mount = "FLEX2-40.DSK"`, it means *the disk in
 this folder* — and it goes on meaning that after you copy the folder to your desktop, rename it,
@@ -206,8 +210,9 @@ actually running:
 ```
 swtpcsim> SHOW PATHS
   base directory     /home/you/swtpc/flex
-                     Everything resolves against this -- what a machine file
-                     mounts, and the MOUNT / LOAD / SAVE / DO / -s you type.
+                     What a machine file mounts, and the MOUNT / LOAD / SAVE /
+                     DO you type, resolve against this. A path inside a DO or
+                     -s file is relative to that file.
                      It is the directory the machine was loaded from.
 ```
 
@@ -277,6 +282,10 @@ commands left it. `-i` alone, with no `-x` or `-s`, does nothing.
 ```
 $ swtpcsim -s boot.cmd examples/flex/flex2-40.toml
 ```
+
+**A path in a script is relative to the script's folder**, as a path in a machine file is
+relative to the machine file. So a script that mounts a disk beside it works from any folder:
+give the path to the script from the folder that you are in.
 
 **The exit status is non-zero if any command failed.** That is the whole point: `swtpcsim -s`
 is a program you can put in a shell script, a Makefile, or a build, and test the result of.

@@ -1164,8 +1164,9 @@ void Monitor::showPaths(std::ostream& out) {
     }
 
     row("base directory", base);
-    out << pad << "Everything resolves against this -- what a machine file\n"
-        << pad << "mounts, and the MOUNT / LOAD / SAVE / DO / -s you type.\n";
+    out << pad << "What a machine file mounts, and the MOUNT / LOAD / SAVE /\n"
+        << pad << "DO you type, resolve against this. A path inside a DO or\n"
+        << pad << "-s file is relative to that file.\n";
     if (m_.fromFile)
         out << pad << "It is the directory the machine was loaded from.\n";
     else
@@ -5633,6 +5634,36 @@ std::string Monitor::resolveInput(const std::string& p) const {
     return resolveFrom(inputBase(), q);
 }
 
+int Monitor::runScript(std::istream& in, const std::string& file, std::ostream& out) {
+    // THE SAME FILE SCOPE runLines() opens for DO and a startup list: while the script
+    // runs, relative paths start at its directory, and a `~` in it stays literal. Only the
+    // line loop differs -- repl() keeps the `altairsim>` echo and the exit status that a
+    // -s transcript and its caller rely on, and lends the file to EDIT for its follow-up
+    // lines. Restored on every way out, so an -i session after it types at the machine's
+    // base again.
+    const std::string dir = dirOf(file);
+    std::error_code   cec;
+    std::string canon = std::filesystem::weakly_canonical(file, cec).generic_string();
+    if (cec || canon.empty()) canon = file;
+
+    struct Scope {
+        Monitor&    m;
+        std::string prevDir;
+        ~Scope() {
+            m.doStack_.pop_back();
+            --m.fileDepth_;
+            m.startupDir_ = prevDir;
+            for (const auto& b : m.m_.boards()) b->setConfigDir(prevDir);
+        }
+    } scope{*this, startupDir_};
+    doStack_.push_back(canon);  // a DO of this same file inside it is caught as a cycle
+    ++fileDepth_;
+    startupDir_ = dir;
+    for (const auto& b : m_.boards()) b->setConfigDir(dir);
+
+    return repl(in, out, false);
+}
+
 int Monitor::repl(std::istream& in, std::ostream& out, bool interactive) {
     std::string line;
     LineEditor ed;
@@ -5735,6 +5766,11 @@ int Monitor::repl(std::istream& in, std::ostream& out, bool interactive) {
             // `swtpcsim> ;...` for every comment, burying the commands. It runs nothing
             // either way; this just keeps the transcript to the lines that act.
             if (!tokenize(line).empty()) out << "swtpcsim> " << line << "\n";
+            // Inside a -s script (runScript), re-stamp every board with the script's
+            // directory before each line, as runLines() does: a board ADDED by an earlier
+            // line then resolves its own file paths against the script too.
+            if (fileDepth_ > 0)
+                for (const auto& b : m_.boards()) b->setConfigDir(startupDir_);
         }
         if (!exec(line, out)) break;
     }
