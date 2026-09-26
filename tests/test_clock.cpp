@@ -20,6 +20,7 @@
 #include "boards/swtpc-mps.h"
 #include "core/board.h"
 #include "core/clock.h"
+#include "core/statefile.h"
 #include "test.h"
 
 #include <string>
@@ -287,4 +288,32 @@ void test_clock() {
         b.attachClock(&c);
     }   // c dies first; ~Sio2Port must not cancel through it
     CHECK(true, "an MP-S declared before its clock is destroyed cleanly");
+
+    // A HANDLE IS NEVER ISSUED TWICE -- not by another clock, and not after a RESTORE. A
+    // board cancels its old handle before re-arming, and that old handle may have come from
+    // somewhere else: the scratch machine a file was built in (replaceWith()), or the run
+    // between a SNAPSHOT and its RESTORE. If the number had been issued again, the cancel
+    // would kill somebody else's deadline.
+    {
+        Clock scratch, live;
+        Clock::Handle old = scratch.after(10, [] {});   // armed while the file was built
+        bool fired = false;
+        live.after(10, [&] { fired = true; });          // another board, already moved
+        live.cancel(old);                               // the moved board re-arms
+        live.advance(20);
+        CHECK(fired, "a handle from another clock cancels nothing on this one");
+    }
+    {
+        Clock c;
+        StateWriter w;
+        c.serialize(w);                                 // SNAPSHOT
+        Clock::Handle stale = c.after(10, [] {});       // board B arms, after the snapshot
+        StateReader r(w.data());
+        c.deserialize(r);                               // RESTORE
+        bool fired = false;
+        c.after(10, [&] { fired = true; });             // board A re-arms first...
+        c.cancel(stale);                                // ...then B cancels its old one
+        c.advance(20);
+        CHECK(fired, "after a RESTORE, a handle from before it cancels nothing new");
+    }
 }
