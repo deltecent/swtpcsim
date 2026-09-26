@@ -122,6 +122,36 @@ void test_bus() {
         CHECK(!m.bus.takeUnclaimedHalt(), "take is read-and-clear -- it fires once");
     }
 
+    SECTION("peekBytes -- n peek()s in one call, and the same bytes");
+
+    {
+        // RAM in 0000-0FFF and F000-FFFF, NOTHING between: a run of three bytes can
+        // cross a page, wrap past FFFF, or step off the end of a card into the hole.
+        // Every such start must read exactly what three peek()s would.
+        Machine m;
+        std::string err;
+        auto* mem = addMem(m, "mem0");
+        mem->addRegion(ram(0x0000, 0x1000), err);
+        mem->addRegion(ram(0xF000, 0x1000), err);
+        setProperty(*mem, "fill", "zero", err);
+        mem->power();
+        for (uint32_t a = 0; a < 0x10000; ++a) m.bus.memWrite((uint16_t)a, (uint8_t)(a * 7 + 3));
+
+        bool same = true;
+        for (uint16_t start : {0x0000, 0x00FE, 0x0FFE, 0x1000, 0x7FFF, 0xEFFE, 0xFFFE, 0xFFFF}) {
+            uint8_t got[3];
+            m.bus.peekBytes(start, got, 3);
+            for (int k = 0; k < 3; ++k)
+                if (got[k] != m.bus.peek((uint16_t)(start + k))) same = false;
+        }
+        CHECK(same, "peekBytes matches peek() across a page, past FFFF and into the hole");
+
+        uint8_t hole[3];
+        m.bus.peekBytes(0x2000, hole, 3);
+        CHECK(hole[0] == 0xFF && hole[1] == 0xFF && hole[2] == 0xFF,
+              "and an empty page floats to FF, byte for byte");
+    }
+
     SECTION("the pre-access veto -- a cycle can be abandoned BEFORE any board is touched");
 
     // The debugger installs this to stop a cycle breakpoint WITH the PC on the

@@ -302,6 +302,16 @@ std::vector<RegDef> Cpu6800::registers() {
     };
 }
 
+// The list above, as plain loads (CpuCore::captureRegs). SAME ORDER, entry for entry --
+// tests/test_cpu6800.cpp holds it to registers() so the two cannot drift.
+void Cpu6800::captureRegs(std::vector<uint32_t>& out) {
+    out.resize(12);
+    uint32_t* o = out.data();
+    o[0] = hf_; o[1] = if_; o[2] = nf_; o[3] = zf_; o[4] = vf_; o[5] = cf_;
+    o[6] = a_; o[7] = b_; o[8] = x_; o[9] = sp_; o[10] = pc_;
+    o[11] = cc();
+}
+
 // Reset sets the I mask and arms the vector fetch. It touches NO registers and NO
 // memory -- the 6800's reset does neither, and the FFFE/FFFF read is deferred to
 // the first step() so that stays literally true (DESIGN.md 6).
