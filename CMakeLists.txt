@@ -982,6 +982,8 @@ if(EXPECT_EXECUTABLE)
                        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
 else()
-  message(STATUS "expect not found -- SKIPPING the interactive CLI test (acceptance-cli). "
-                 "The tty paths (prompt echo, ATTN, clock pacing) will not be covered.")
+  message(STATUS "expect not found -- SKIPPING every interactive (pty-driven) acceptance "
+                 "test, not just acceptance-cli: none of the tests that type at a guest are "
+                 "registered without expect (as on Windows). The tty and mid-run paths "
+                 "(prompt echo, ATTN, clock pacing, typed guest commands) go uncovered here.")
 endif()

@@ -99,11 +99,12 @@ The result is `build/swtpcsim`.
 At configure time you may see:
 
 ```
--- expect not found -- SKIPPING the interactive CLI test (acceptance-cli).
+-- expect not found -- SKIPPING every interactive (pty-driven) acceptance test, ...
 ```
 
-That only disables one optional *test*; it does not affect building the binary.
-Install `expect` if you want that test. The build compiles with
+That disables the interactive acceptance *tests* (the ones that type at a
+guest); it does not affect building the binary. Install `expect` if you want
+them. The build compiles with
 `-Wall -Wextra -Wpedantic` and may print warnings under GCC. By default warnings
 do not fail the build, but configuring with `-DWERROR=on` promotes them to errors
 (adds `-Werror`) — and **CI builds every leg with `-DWERROR=on`**, so a warning
