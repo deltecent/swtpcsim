@@ -56,10 +56,15 @@ through MCP:
 
 The shape of a session is therefore: `run {from: 0xE0D0, until: "$"}` to reach the SWTBUG
 monitor and `run {input: "D", until: "+++"}` to boot FLEX, then `run {input: "CAT\r", until:
-"+++"}` per command, reading the reply each time. A `run`
-**never blocks** — it advances the guest for at most `timeout_ms` (default 2000) and
-returns — so a `tools/call` always comes back, unlike a bare `RUN` through the `monitor`
-tool, which under a pipe waits on a stdin that is the JSON-RPC channel itself.
+"+++"}` per command, reading the reply each time. A `run` **never blocks** — it advances the
+guest for at most `timeout_ms` (default 2000, maximum 600000) and returns — so a `tools/call`
+always comes back, unlike a bare `RUN` through the `monitor` tool, which under a pipe waits on
+a stdin that is the JSON-RPC channel itself.
+
+That budget is a ceiling and not a wait. The call ends as soon as `until` matches or the
+guest reaches a prompt, so asking for more time than the work needs costs nothing: a job that
+takes fifty seconds under a budget of two minutes returns after fifty seconds. Set the budget
+to the longest you are willing to wait, not to what you expect, and let `until` end the call.
 
 What you type goes to the guest byte for byte, control characters included, and every line in
 the machine is 8-bit clean. A control byte is written as a JSON `\uXXXX` escape: `\u0003` is

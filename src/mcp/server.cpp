@@ -173,12 +173,17 @@ Json toolList() {
                                     "escape it is: \\u0003 is ^C, \\u001a is ^Z, \\u001b is ESC. "
                                     "\\x03 is NOT JSON and arrives as the characters x03.");
         p["until"]      = strSchema("Optional: stop as soon as this substring appears in the "
-                                    "output (e.g. a prompt like \"A0>\").");
-        p["timeout_ms"] = intSchema("Wall-clock budget for this call in ms (default 2000). By "
-                                    "default the guest runs flat out and this only bounds how "
-                                    "long we wait; with `SET cpu0 clock_hz=N` set, the guest is "
-                                    "paced to that crystal so a real serial/socket device has "
-                                    "wall-clock time to reply within this budget.");
+                                    "output (e.g. a prompt like \"+++\").");
+        p["timeout_ms"] = intSchema("Wall-clock ceiling for this call in ms (default 2000, max "
+                                    "600000). A CEILING, NOT A WAIT: the call returns the moment "
+                                    "`until` matches or the guest reaches a prompt, so a budget "
+                                    "bigger than the job costs nothing -- set it to the longest "
+                                    "you will sit through rather than re-issuing `run` to walk a "
+                                    "long job forward. By default the guest runs flat out and "
+                                    "this only bounds how long we wait; with `SET cpu0 clock_hz=N` "
+                                    "set, the guest is paced to that crystal so a real serial/"
+                                    "socket device has wall-clock time to reply within this "
+                                    "budget.");
         p["max_steps"]  = intSchema("Optional instruction-count cap for this call.");
         list.push(tool("run",
                        "Advance the running guest a bounded slice and return what it printed to "

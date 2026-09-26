@@ -214,8 +214,14 @@ run {input: "CAT\r", until: "+++"}               # a command, read the reply
 ```
 
 `\r` submits a FLEX line. `run` also returns on its own when the guest reaches a prompt
-(`stopped: "idle"`), so you rarely need to guess a timeout for interactive commands — set a
-generous `timeout_ms` only for long silent work (a disk load, a long assembly).
+(`stopped: "idle"`), so you rarely need to guess a timeout for interactive commands.
+
+**`timeout_ms` is a ceiling, not a wait.** The call ends the moment `until` matches or the
+guest reaches a prompt, so a budget larger than the job costs you nothing — a 50-second
+assembly under `timeout_ms: 120000` returns in 50 seconds, not 120. There is no reason to
+trim it to what you expect the work to take, and no need to re-issue `run` by hand to walk a
+long job forward. Set it to the worst case you are willing to sit through and let `until` end
+the call. The maximum is 600000 (ten minutes); anything larger is clamped to it.
 
 **`from` is a JSON number, and JSON has no hex.** The `0xE0D0` above is shorthand; on the wire
 write the decimal value: `57552` for `E0D0`, `65496` for `FFD8`. A string such as `"0xE0D0"` is
