@@ -804,6 +804,15 @@ add_test(NAME acceptance-history
                  -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/acceptance/history.cmake)
 set_tests_properties(acceptance-history PROPERTIES LABELS acceptance TIMEOUT 60)
 
+# Under --mcp, stdout is the JSON-RPC transport: a machine file's `#>` notes must go to
+# stderr, not ahead of the `initialize` reply where a strict client chokes on them (#459).
+add_test(NAME acceptance-mcp-stdout
+         COMMAND ${CMAKE_COMMAND}
+                 -DSIM=$<TARGET_FILE:swtpcsim>
+                 -DBIN=${CMAKE_CURRENT_BINARY_DIR}
+                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/acceptance/mcp-stdout.cmake)
+set_tests_properties(acceptance-mcp-stdout PROPERTIES LABELS acceptance TIMEOUT 60)
+
 # ---------------------------------------------------------------------------
 # SNAPSHOT / RESTORE through the real monitor -- the command wiring (DESIGN.md 13).
 # The state round-trip is proved at the unit level (tests/test_snapshot.cpp); this
