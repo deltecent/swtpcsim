@@ -25,6 +25,7 @@
 #include <streambuf>
 #include <string>
 #include <thread>
+#include <vector>
 
 using namespace swtpc;
 
@@ -73,22 +74,60 @@ private:
     char                    ch_ = 0;
 };
 
+// The other half of FeedBuf: an output buffer a second thread can read WHILE the
+// server is still writing to it. A plain std::ostringstream cannot be -- reading
+// out.str() while runMcp writes is a data race -- so a test that needs to know a
+// reply has landed before it does the next thing has to have this. That is the only
+// honest way to time an interrupt: wait until the setup calls have actually ANSWERED,
+// rather than guessing how long a guest boot takes on someone else's runner.
+class SinkBuf : public std::streambuf {
+public:
+    std::string text() const {
+        std::lock_guard<std::mutex> lk(mu_);
+        return s_;
+    }
+
+protected:
+    int_type overflow(int_type c) override {
+        if (c != traits_type::eof()) {
+            std::lock_guard<std::mutex> lk(mu_);
+            s_.push_back(traits_type::to_char_type(c));
+        }
+        return c;
+    }
+    std::streamsize xsputn(const char* p, std::streamsize n) override {
+        std::lock_guard<std::mutex> lk(mu_);
+        s_.append(p, (size_t)n);
+        return n;
+    }
+
+private:
+    mutable std::mutex mu_;
+    std::string        s_;
+};
+
+// The replies in a captured stream, by id -- runScript's tail end, for the tests that
+// drive runMcp themselves instead of handing it a finished script.
+std::map<int, Json> repliesById(const std::string& text) {
+    std::map<int, Json> byId;
+    std::istringstream  lines(text);
+    std::string         line;
+    while (std::getline(lines, line)) {
+        if (line.empty()) continue;
+        Json        j;
+        std::string err;
+        if (Json::parse(line, j, err)) byId[(int)j.at("id").integer()] = j;
+    }
+    return byId;
+}
+
 std::map<int, Json> runScript(Machine& m, const std::string& script,
                               const std::string& mirror = "") {
     std::istringstream in(script);
     std::ostringstream out;
     runMcp(m, in, out, mirror);
 
-    std::map<int, Json> byId;
-    std::istringstream lines(out.str());
-    std::string line;
-    while (std::getline(lines, line)) {
-        if (line.empty()) continue;
-        Json j;
-        std::string err;
-        if (Json::parse(line, j, err)) byId[(int)j.at("id").integer()] = j;
-    }
-    return byId;
+    return repliesById(out.str());
 }
 
 // A free TCP port the OS confirms unused -- bind port 0, read what it picked, drop it.
@@ -139,6 +178,66 @@ bool loadAltair680(Machine& m) {
     std::string err;
     CHECK(loadMachine(*mach, m, err), "altair680 loads");
     return true;
+}
+
+// Drive a LIVE runMcp and interrupt the one call that is meant to be interrupted.
+//
+// The hard part is not the signal, it is knowing when to send it. A ^C that lands before
+// the call under test has been dispatched is CORRECTLY discarded -- the server clears a
+// stale flag as it publishes each request id (mcp/server.cpp) -- so a test that guesses
+// "the setup is surely done by now" and sleeps is measuring the runner's mood, not the
+// server: the guest boot in `setup` takes as long as it takes, and on a loaded Windows
+// runner that was longer than the guess. So: feed `setup`, WAIT for its last reply to
+// land, and only then feed the call under test. What is left to guess -- one line read
+// and a mutex, microseconds -- the 200ms below covers a thousand times over.
+//
+// `after` is fed once the interrupt has been answered (the stale-flag checks). The raise
+// happens on this thread, between two feeds, so it can never escape runMcp's SigintGuard
+// -- outside it SIGINT is back to its default disposition and would kill the test binary.
+struct SigintRun {
+    std::map<int, Json> replies;
+    long long           elapsedMs = 0;  // feeding the call under test -> its reply
+};
+
+SigintRun runWithSigint(Machine& m, const std::vector<std::string>& setup,
+                        const std::string& underTest, const std::vector<std::string>& after) {
+    FeedBuf      feedBuf;
+    std::istream in(&feedBuf);
+    SinkBuf      sinkBuf;
+    std::ostream out(&sinkBuf);
+
+    std::thread worker([&] { runMcp(m, in, out, ""); });
+
+    int  id   = 0;
+    auto feed = [&](const std::string& params) {
+        std::ostringstream line;
+        line << R"({"jsonrpc":"2.0","id":)" << ++id
+             << R"(,"method":"tools/call","params":)" << params << "}\n";
+        feedBuf.feed(line.str());
+        return id;
+    };
+    auto answered = [&](int want) {
+        return waitFor([&] { return repliesById(sinkBuf.text()).count(want) != 0; }, 30000);
+    };
+
+    for (const auto& call : setup) feed(call);
+    CHECK(answered(id), "the setup calls answered before the call under test was sent");
+
+    const auto t0    = std::chrono::steady_clock::now();
+    const int  runId = feed(underTest);
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));  // it is under way by now
+    std::raise(SIGINT);
+    CHECK(answered(runId), "the interrupted run answered");
+    SigintRun r;
+    r.elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                       std::chrono::steady_clock::now() - t0)
+                       .count();
+
+    for (const auto& call : after) feed(call);
+    feedBuf.close();
+    worker.join();
+    r.replies = repliesById(sinkBuf.text());
+    return r;
 }
 
 std::string tmpPath(const char* leaf) {
@@ -670,34 +769,20 @@ void test_mcp() {
         // not bleed into the next one.
         Machine m;
         if (!loadAltair680(m)) return;
-        std::ostringstream s;
-        int id = 0;
-        auto req = [&](const std::string& params) {
-            s << R"({"jsonrpc":"2.0","id":)" << ++id
-              << R"(,"method":"tools/call","params":)" << params << "}\n";
-        };
-        req(R"({"name":"run","arguments":{"from":65496,"until":".","timeout_ms":4000}})");
-        req(R"({"name":"monitor","arguments":{"command":"SET cpu0 idle=off"}})");
-        req(R"({"name":"run","arguments":{"timeout_ms":4000}})");  // the call under test
-        req(R"({"name":"run","arguments":{"timeout_ms":500}})");   // stale-flag check
 
-        std::thread interruptor([] {
-            std::this_thread::sleep_for(std::chrono::milliseconds(700));
-            std::raise(SIGINT);
-        });
-
-        const auto t0  = std::chrono::steady_clock::now();
-        auto       rep = runScript(m, s.str());
-        const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                    std::chrono::steady_clock::now() - t0)
-                                    .count();
-        interruptor.join();
+        auto r = runWithSigint(
+            m,
+            {R"({"name":"run","arguments":{"from":65496,"until":".","timeout_ms":4000}})",
+             R"({"name":"monitor","arguments":{"command":"SET cpu0 idle=off"}})"},
+            R"({"name":"run","arguments":{"timeout_ms":4000}})",          // the call under test
+            {R"({"name":"run","arguments":{"timeout_ms":500}})"});        // stale-flag check
+        auto& rep = r.replies;
 
         CHECK(rep[3].at("result").at("structuredContent").at("stopped").str() == "interrupted",
               "the 4000ms-budget run stops on the SIGINT, not idle or timeout");
-        CHECK(elapsedMs < 1500,
+        CHECK(r.elapsedMs < 1500,
               ("the interrupt landed well inside the 4000ms budget (took " +
-               std::to_string(elapsedMs) + "ms)")
+               std::to_string(r.elapsedMs) + "ms)")
                   .c_str());
         CHECK(rep[4].at("result").at("structuredContent").at("stopped").str() == "timeout",
               "clearInterrupt() means the next run() does not inherit a stale flag -- idle=off "
@@ -716,23 +801,14 @@ void test_mcp() {
         for (int trial = 0; trial < 6; ++trial) {
             Machine m;
             if (!loadAltair680(m)) return;
-            std::ostringstream s;
-            int id = 0;
-            auto req = [&](const std::string& params) {
-                s << R"({"jsonrpc":"2.0","id":)" << ++id
-                  << R"(,"method":"tools/call","params":)" << params << "}\n";
-            };
-            req(R"({"name":"run","arguments":{"from":65496,"until":".","timeout_ms":4000}})");
-            req(R"({"name":"monitor","arguments":{"command":"SET cpu0 idle=off"}})");
-            req(R"({"name":"monitor","arguments":{"command":"SET cpu0 clock_hz=2000000"}})");
-            req(R"({"name":"run","arguments":{"timeout_ms":3000}})");  // the call under test
 
-            std::thread interruptor([] {
-                std::this_thread::sleep_for(std::chrono::milliseconds(900));
-                std::raise(SIGINT);
-            });
-            auto rep = runScript(m, s.str());
-            interruptor.join();
+            auto rep = runWithSigint(
+                m,
+                {R"({"name":"run","arguments":{"from":65496,"until":".","timeout_ms":4000}})",
+                 R"({"name":"monitor","arguments":{"command":"SET cpu0 idle=off"}})",
+                 R"({"name":"monitor","arguments":{"command":"SET cpu0 clock_hz=2000000"}})"},
+                R"({"name":"run","arguments":{"timeout_ms":3000}})",  // the call under test
+                {}).replies;
 
             CHECK(rep[4].at("result").at("structuredContent").at("stopped").str() == "interrupted",
                   ("a paced run stops on the SIGINT every time, not just when it happens to "
@@ -760,7 +836,8 @@ void test_mcp() {
 
         FeedBuf      feedBuf;
         std::istream feedIn(&feedBuf);
-        std::ostringstream out;
+        SinkBuf      sinkBuf;
+        std::ostream out(&sinkBuf);
 
         std::thread worker([&] { runMcp(m, feedIn, out, ""); });
 
@@ -774,6 +851,14 @@ void test_mcp() {
 
         req(R"({"name":"run","arguments":{"from":65496,"until":".","timeout_ms":4000}})");
         req(R"({"name":"monitor","arguments":{"command":"SET cpu0 idle=off"}})");
+
+        // Wait for the setup to ANSWER before sending the call to be cancelled: a cancel is
+        // matched against the request in flight, so one that arrives while the guest is still
+        // booting names an id that is not current yet and is dropped -- which is right, and
+        // would make this a test of how fast the runner is rather than of the cancel.
+        CHECK(waitFor([&] { return repliesById(sinkBuf.text()).count(2) != 0; }, 30000),
+              "the setup calls answered before the run to be cancelled was sent");
+
         req(R"({"name":"run","arguments":{"timeout_ms":4000}})");  // id 3 -- will be cancelled
 
         // Queued immediately behind the still-running id 3 -- proves the reader thread is not
@@ -782,7 +867,7 @@ void test_mcp() {
         req(R"({"name":"recv","arguments":{}})");  // id 5
 
         const auto t0 = std::chrono::steady_clock::now();
-        std::this_thread::sleep_for(std::chrono::milliseconds(150));  // let id 3 actually start
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));  // id 3 is under way by now
         feedBuf.feed(R"({"jsonrpc":"2.0","method":"notifications/cancelled",)"
                      R"("params":{"requestId":3}})"
                      "\n");
@@ -794,15 +879,7 @@ void test_mcp() {
                                     std::chrono::steady_clock::now() - t0)
                                     .count();
 
-        std::map<int, Json> rep;
-        std::istringstream  lines(out.str());
-        std::string         line;
-        while (std::getline(lines, line)) {
-            if (line.empty()) continue;
-            Json        j;
-            std::string err;
-            if (Json::parse(line, j, err)) rep[(int)j.at("id").integer()] = j;
-        }
+        std::map<int, Json> rep = repliesById(sinkBuf.text());
 
         CHECK(rep[3].at("result").at("structuredContent").at("stopped").str() == "interrupted",
               "notifications/cancelled for id 3 stops the matching in-flight run");
