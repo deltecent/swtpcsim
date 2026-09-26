@@ -70,6 +70,37 @@ bool shouldPace(bool anyConsole, bool tty, bool anyRemoteLine, bool free) {
     return (anyConsole && tty) || anyRemoteLine;
 }
 
+// SET MACHINE's table: the settings that belong to the machine as a whole rather than to
+// any board in it. Today that is only the name -- what SHOW MACHINE prints, the video
+// window's title, and what CONFIG SAVE writes as `[machine] name`. Before this it was set only by the
+// loader, so a machine built at the prompt always saved as whatever it was built from
+// (`none`, `default`). Property rows rather than a hand-rolled check, so SET, its errors
+// and tab completion come out of the same generic path CONSOLE and DISPLAY use.
+static std::vector<Property> machineProperties(Machine& m) {
+    Property n;
+    n.name = "name";
+    n.help = "The machine's name -- what SHOW MACHINE prints and CONFIG SAVE writes";
+    n.kind = Kind::Str;
+    n.get  = [&m] { return Value::ofStr(m.name); };
+    n.set  = [&m](const Value& v, std::string& err) {
+        if (v.s().empty()) {
+            err = "machine: name cannot be empty";
+            return false;
+        }
+        // CONFIG SAVE writes the name raw inside `"..."`, which is how the loader reads a
+        // string back -- quotes stripped from the ends, nothing unescaped. A `"` inside it
+        // would close the string early, and a `#` after that is read as a comment, so
+        // the file would load as a different name or not at all. Refuse it here.
+        if (v.s().find('"') != std::string::npos) {
+            err = "machine: a name cannot contain a double quote";
+            return false;
+        }
+        m.name = v.s();
+        return true;
+    };
+    return {n};
+}
+
 std::vector<std::string> tokenize(const std::string& line) {
     std::vector<std::string> t;
     size_t i = 0;
@@ -600,7 +631,8 @@ Completions Monitor::complete(const std::string& line) {
         if (c == std::string::npos) {
             for (const auto& b : m_.boards()) keep(b->id);
             if (wantPseudo)
-                for (const char* kw : {"CONSOLE", "DISPLAY", "TERMINAL", "REG", "BUS"}) keep(kw);
+                for (const char* kw : {"CONSOLE", "DISPLAY", "TERMINAL", "MACHINE", "REG", "BUS"})
+                    keep(kw);
             // What comes after the board-id half depends on the board. For a target that
             // names a UNIT (MOUNT, CONNECT, a board verb), a bare id is finished only when
             // the board has exactly one unit of the right kind -- the lone-unit rule
@@ -716,6 +748,8 @@ Completions Monitor::complete(const std::string& line) {
                 props = Display::properties();
             } else if (is(target, "TERMINAL")) {
                 props = TerminalStream::properties();
+            } else if (is(target, "MACHINE")) {
+                props = machineProperties(m_);
             } else {
                 size_t c = target.find(':');
                 if (c == std::string::npos) {
@@ -3360,13 +3394,13 @@ bool Monitor::exec(const std::string& line, std::ostream& out) {
     }
 
     if (cmd == "SET") {
-        if (!need(3, "SET <id>[:<unit>]|CONSOLE|DISPLAY|REG|BUS <key>=<value>")) return true;
+        if (!need(3, "SET <id>[:<unit>]|CONSOLE|DISPLAY|TERMINAL|MACHINE|REG|BUS <key>=<value>")) return true;
         // The target-KIND selector resolves by prefix -- `SET CON base=octal` reaches
         // CONSOLE -- built-ins first. An empty result is not one of these keywords: a[1]
         // is then a channel, unit or board id, and the paths below use the RAW a[1] to
         // look it up, so `SET acr0 ...` and `SET 6850 debug=...` are untouched.
         std::string setSel =
-            resolveKeyword(a[1], {"BUS", "REG", "CONSOLE", "DISPLAY", "TERMINAL"});
+            resolveKeyword(a[1], {"BUS", "REG", "CONSOLE", "DISPLAY", "TERMINAL", "MACHINE"});
         // Reject trailing junk, the same contract SHOW keeps: once the target and its
         // key=value are parsed, a leftover token is an error, not a silent drop. The
         // ceiling is 3 for the `key=value` form and 4 for the spaced `key value` form,
@@ -3478,7 +3512,7 @@ bool Monitor::exec(const std::string& line, std::ostream& out) {
                 if (tooMany(4)) return true;
             } else {
                 out << "usage: SET <id>[:<unit>] <key>=<value>  |  SET CONSOLE <key>=<value>"
-                       "  |  SET DISPLAY <key>=<value>\n";
+                       "  |  SET DISPLAY <key>=<value>  |  SET MACHINE name=<name>\n";
                 failed_ = true;
                 return true;
             }
@@ -3518,6 +3552,19 @@ bool Monitor::exec(const std::string& line, std::ostream& out) {
                 failed_ = true;
             } else {
                 out << "display: " << k << "=" << v << "\n";
+            }
+            return true;
+        }
+
+        // The machine itself -- its name, which is what CONFIG SAVE writes. Neither a
+        // board nor the host's, so it gets its own target.
+        if (setSel == "MACHINE") {
+            std::string err;
+            if (!setPropertyIn(machineProperties(m_), "machine", k, v, err)) {
+                out << err << "\n";
+                failed_ = true;
+            } else {
+                out << "machine: " << k << "=" << v << "\n";
             }
             return true;
         }

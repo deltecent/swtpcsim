@@ -80,7 +80,7 @@ Type the part before the bracket.
 | `R[UN]` | Start or resume the machine, optionally at an address. | `RUN [addr]` |
 | `SA[VE]` | Write a range of memory out to a file. | `SAVE <file> <range> [FORMAT=BIN\|HEX\|OCTAL\|PRN]` |
 | `SEA[RCH]` | Find bytes or a string in a range of memory. | `SEARCH <range> <bytes...>\|"str"` |
-| `SE[T]` | Change a property of a board, the console, display, a register, or the bus. | `SET <id>[:<u>]\|CONSOLE\|DISPLAY\|REG\|BUS <k>=<v>` |
+| `SE[T]` | Change a property of a board, the console, display, a register, the bus, or the machine. | `SET <id>[:<u>]\|CONSOLE\|DISPLAY\|MACHINE\|REG\|BUS <k>=<v>` |
 | `SH[OW]` | Display the state of a board, the bus, or the machine. | `SHOW <id>\|BOARDS\|BOARD <type> [UNITS]\|MACHINES\|MACHINE [<name>]\|BUS [MAP\|IRQ\|CONTENTION]\|ROMS\|MOUNTS\|PATHS\|CONSOLE\|DISPLAY\|SYMBOLS\|CLOCK\|VERSION` |
 | `SN[APSHOT]` | Save the whole machine state to a file. | `SNAPSHOT <file>` |
 | `STA[RTUP]` | Edit the machine's boot list (the commands CONFIG SAVE writes as startup = [...]). | `STARTUP [ADD <command> \| REMOVE <n> \| CLEAR]` |

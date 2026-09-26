@@ -1619,6 +1619,60 @@ void test_cli() {
     }
 
     // ---------------------------------------------------------------------
+    // SET MACHINE name= -- the one [machine] line that could not be set at the prompt
+    // ---------------------------------------------------------------------
+    // The name was written only by the loader, so a machine built at the prompt saved as
+    // whatever it came from -- `none` after -n -- and the file had to be hand-edited to
+    // name it. The round trip must bring the name back byte for byte.
+    SECTION("SET MACHINE name= -- names the machine, and CONFIG SAVE carries it");
+    {
+        Machine nm;
+        nm.name = "none";  // what -n leaves
+        Monitor nmon(nm);
+        auto    nr = [&](const char* cmdline) {
+            std::ostringstream o;
+            nmon.exec(cmdline, o);
+            return o.str();
+        };
+
+        CHECK(nr("SET MACHINE name=mybox").find("machine: name=mybox") != std::string::npos,
+              "SET MACHINE name= says what it set");
+        CHECK(nm.name == "mybox", "...and the machine is renamed");
+        CHECK(nr("SHOW MACHINE").find("name      mybox") != std::string::npos,
+              "SHOW MACHINE reports the new name");
+        nr("SET MACHINE name other");
+        CHECK(nm.name == "other", "the spaced `key value` form works too");
+        nr("SET MAC NAME=box2");
+        CHECK(nm.name == "box2", "MAC resolves to MACHINE and the key is case-insensitive");
+
+        auto roundTrips = [&](const std::string& want) {
+            nm.name          = want;
+            std::string text = saveTomlText(nm);
+            Machine     back;
+            std::string err;
+            return loadTomlText(text, "name (saved)", back, err) && back.name == want;
+        };
+        CHECK(roundTrips("box2"), "CONFIG SAVE writes the name and CONFIG LOAD reads it back");
+        CHECK(roundTrips("my #1 C:\\box"),
+              "a name with a space, a '#' and a backslash survives the round trip");
+        CHECK(!nmon.failed(), "a run of valid SET MACHINE commands leaves failed() clear");
+
+        // The refusals, each on its own monitor because failed() is sticky.
+        auto refused = [](const char* cmdline, const char* expect) {
+            Machine            fresh;
+            Monitor            rmon(fresh);
+            std::ostringstream o;
+            rmon.exec(cmdline, o);
+            return rmon.failed() && o.str().find(expect) != std::string::npos;
+        };
+        CHECK(refused("SET MACHINE name=", "cannot be empty"), "an empty name is refused");
+        CHECK(refused("SET MACHINE name=\"a\\\"b\"", "double quote"),
+              "a name with a double quote is refused -- CONFIG SAVE could not write it back");
+        CHECK(refused("SET MACHINE bogus=1", "bogus"), "an unknown machine key is refused");
+        CHECK(refused("SET MACHINE name=a junk", "junk"), "trailing junk is refused");
+    }
+
+    // ---------------------------------------------------------------------
     // CONFIG SAVE: a text value holding a '"' (issue #538)
     // ---------------------------------------------------------------------
     // A single string value resolves no escapes, so a '"' was written raw -- and a '#' after
