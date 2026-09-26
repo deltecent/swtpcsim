@@ -261,7 +261,13 @@ public:
 
     // Run. `maxSteps == 0` means until something stops us -- a breakpoint, a HLT,
     // or ^C. Returns WHY it stopped, always: there is no "it just came back".
-    RunResult run(uint64_t maxSteps);
+    //
+    // `clearPending` (default true) clears a pending interrupt on entry, so a ^C
+    // left over from before this run does not stop it at once. A caller that drives
+    // run() in SLICES, and clears the flag itself once at the start of its own
+    // command, passes false: otherwise an interrupt landing between its own check
+    // and the next slice is erased unseen (the --mcp run tool).
+    RunResult run(uint64_t maxSteps, bool clearPending = true);
 
     // STEP-OVER's temporary breakpoint (NEXT). A run-scoped, one-shot PC target
     // the run loop stops at -- NOT a Breakpoint: no id, no hits, invisible to
@@ -275,12 +281,12 @@ public:
     static void interrupt();
     static void clearInterrupt();
 
-    // Is one pending RIGHT NOW? run() clears the flag on entry, so a caller that
-    // drives run() in SLICES cannot learn from the slice alone that an interrupt
-    // arrived between two of them -- the next slice wipes it first. Such a caller
-    // asks here at the top of its own loop instead; see the --mcp run tool, which
-    // sleeps between slices to pace a clock and would otherwise lose every ^C that
-    // landed in the sleep.
+    // Is one pending RIGHT NOW? By default run() clears the flag on entry, so a
+    // caller that drives run() in SLICES cannot learn from the slice alone that an
+    // interrupt arrived between two of them -- the next slice wipes it first. Such a
+    // caller asks here at the top of its own loop, AND passes clearPending=false to
+    // run(), since an interrupt can also land between that check and the slice. See
+    // the --mcp run tool, which sleeps between slices to pace a clock.
     static bool interrupted();
 
 private:

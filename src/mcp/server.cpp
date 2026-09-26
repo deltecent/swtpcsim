@@ -1140,11 +1140,11 @@ Json callTool(Machine& m, McpSession& sess, const std::string& name, const Json&
         for (;;) {
             drain();
             if (!until.empty() && out.find(until) != std::string::npos) { stopped = "match"; break; }
-            // ASK BEFORE THE SLICE, not just after it. Debugger::run() clears the flag as it
-            // enters, so an interrupt that arrived since the last slice returned -- and with a
-            // clock_hz set, most of this loop's wall time is the pacing sleep below -- would be
-            // wiped by the very call meant to report it. Measured before this check: five of
-            // eight ^Cs swallowed at clock_hz=2000000.
+            // ASK BEFORE THE SLICE, not just after it. An interrupt that arrived since the last
+            // slice returned -- and with a clock_hz set, most of this loop's wall time is the
+            // pacing sleep below -- is caught here. Measured before this check existed, when
+            // every slice still cleared the flag on entry: five of eight ^Cs swallowed at
+            // clock_hz=2000000. The slice below no longer clears it either (see there).
             if (Debugger::interrupted()) {
                 // CONSUME it: reporting it to the client is what "handled" means. Leave it
                 // standing and the next ^C -- the one that means "I said stop" -- would find
@@ -1159,7 +1159,13 @@ Json callTool(Machine& m, McpSession& sess, const std::string& name, const Json&
 
             const uint64_t rxBefore     = m.rxBytes();
             const uint64_t hungryBefore = con->hungry();
-            RunResult r = m.debug.run(2000);
+            // KEEP A PENDING INTERRUPT (the `false`). The check at the top of this loop and the
+            // slice are two steps, and a cancel or ^C can land between them. If the slice cleared
+            // the flag on entry, as a whole RUN does, that one would be erased unseen and the run
+            // would go on to its full budget: on Windows, 9 cancels in 5000 were lost that way.
+            // This request's stale flag was already cleared once, at dispatch (runMcp), so
+            // keeping it here cannot resurrect an old one.
+            RunResult r = m.debug.run(2000, false);
             m.pump();
             steps += r.steps;
             publishStatus(steps);  // #490: this slice's boundary, for `status` to read

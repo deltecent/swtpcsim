@@ -45,6 +45,10 @@ Board* Machine::add(const std::string& type, const std::string& id, std::string&
         return nullptr;
     }
     b->id = id;
+    return adopt(std::move(b));
+}
+
+Board* Machine::adopt(std::unique_ptr<Board> b) {
     Board* raw = b.get();
     // Into the backplane, and onto the clock. A card that has nothing
     // time-dependent on it never looks at the clock; a UART cannot work without

@@ -97,6 +97,10 @@ public:
 
     Board* find(const std::string& id);
     Board* add(const std::string& type, const std::string& id, std::string& err);
+    // Fit a board that is already built -- into the backplane, onto the bus and the
+    // clock -- exactly as add() does once makeBoard() has built it. For a board no
+    // registry knows: a test's own fake. The caller sets its id and keeps it unique.
+    Board* adopt(std::unique_ptr<Board> b);
     bool remove(const std::string& id, std::string& err);
     const std::vector<std::unique_ptr<Board>>& boards() const { return boards_; }
 

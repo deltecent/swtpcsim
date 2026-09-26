@@ -312,6 +312,28 @@ std::string tmpPath(const char* leaf) {
 constexpr const char* kMon680Examine = "MFF0100";
 constexpr const char* kMon680ExamineEcho = "FF01 22";
 
+// A board that drops a ^C into one exact spot: the gap between the --mcp run loop's
+// "was I interrupted?" check and the slice it then runs. That loop reads the backplane's
+// rxBytes() between the two, so this board raises the interrupt from there. It is how a
+// test reaches a window a few instructions wide WITHOUT timing: on Windows the real one
+// was hit about once in 550 cancels, which no test can wait for.
+//
+// ONE-SHOT, and that is load-bearing. The loop also reads rxBytes() AFTER each slice, and
+// an interrupt raised there is caught by the next top-of-loop check whatever the slice
+// does -- raise on every call and the test passes with or without the fix. Armed while the
+// worker is idle, the first call after arming is the pre-slice one.
+class GapBoard : public Board {
+public:
+    mutable std::atomic<bool> armed{false};
+    std::string type() const override { return "test-gap"; }
+    bool decodes(const BusCycle&) const override { return false; }
+    std::vector<Property> properties() override { return {}; }
+    uint64_t rxBytes() const override {
+        if (armed.exchange(false)) Debugger::interrupt();
+        return 0;
+    }
+};
+
 } // namespace
 
 void test_mcp() {
@@ -1128,6 +1150,56 @@ void test_mcp() {
         CHECK(posOf(3) < posOf(2),
               "the mid-monitor status reply is written before the monitor's own -- answered "
               "out of band, not queued behind it");
+    }
+
+    SECTION("MCP: an interrupt that lands between the loop's check and the slice is not "
+            "erased");
+    {
+        // The slice used to clear the interrupt flag on entry, so a cancel or ^C landing just
+        // after the loop's own check was wiped unseen and the run served its whole budget --
+        // `timeout`, where the client had asked it to stop. Windows CI hit it on #506 and
+        // #508; 5000 tries there lost 9 cancels before the fix and none after. GapBoard (above)
+        // puts the interrupt in that window every time, so this fails every time without the
+        // fix rather than once in 550.
+        Machine m;
+        if (!loadAltair680(m)) return;
+        auto gb = std::make_unique<GapBoard>();
+        gb->id  = "gap0";
+        GapBoard* gap = gb.get();
+        m.adopt(std::move(gb));
+
+        FeedBuf      feedBuf;
+        std::istream feedIn(&feedBuf);
+        SinkBuf      sinkBuf;
+        std::ostream out(&sinkBuf);
+        std::thread  worker([&] { runMcp(m, feedIn, out, ""); });
+
+        feedBuf.feed(R"({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"run",)"
+                     R"("arguments":{"from":65496,"until":".","timeout_ms":4000}}})"
+                     "\n");
+        feedBuf.feed(R"({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"monitor",)"
+                     R"("arguments":{"command":"SET cpu0 idle=off"}}})"
+                     "\n");
+        CHECK(waitFor([&] { return repliesById(sinkBuf.text()).count(2) != 0; }, 30000),
+              "the setup answered before the board was armed");
+        CHECK(waitForWorker(feedBuf, sinkBuf, false), "the worker is idle when the board is armed");
+
+        gap->armed = true;
+        feedBuf.feed(R"({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"run",)"
+                     R"("arguments":{"timeout_ms":1000}}})"
+                     "\n");
+        CHECK(waitFor([&] { return repliesById(sinkBuf.text()).count(3) != 0; }, 30000),
+              "the run answered");
+        feedBuf.close();
+        worker.join();
+
+        CHECK(!gap->armed, "the board did fire -- the loop read rxBytes() during the run");
+        const std::string st =
+            repliesById(sinkBuf.text())[3].at("result").at("structuredContent").at("stopped").str();
+        CHECK(st == "interrupted",
+              ("an interrupt raised between the check and the slice stops the run (stopped=" +
+               st + ")")
+                  .c_str());
     }
 
     SECTION("MCP: mem_fill, mem_search and mem_save round-trip through the bus");
