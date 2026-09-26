@@ -926,9 +926,11 @@ void test_mcp() {
         req(R"({"name":"status","arguments":{}})");  // id 1 -- before anything has run
         req(R"({"name":"run","arguments":{"from":65496,"until":".","timeout_ms":4000}})");
         req(R"({"name":"monitor","arguments":{"command":"SET cpu0 idle=off"}})");
-        // id 4: flat out, no `until`, idle disabled -- runs its full 4000ms budget, giving a
-        // wide window to poll `status` while it is genuinely still executing.
-        req(R"({"name":"run","arguments":{"timeout_ms":4000}})");
+        // id 4: flat out, no `until`, idle disabled -- runs its full 1500ms budget, giving a
+        // wide window (two 300ms-spaced polls below, with 900ms of margin left over) to poll
+        // `status` while it is genuinely still executing. 1500ms proves the same thing as a
+        // longer budget without adding several seconds to every run of this suite.
+        req(R"({"name":"run","arguments":{"timeout_ms":1500}})");
 
         std::this_thread::sleep_for(std::chrono::milliseconds(300));
         req(R"({"name":"status","arguments":{}})");  // id 5 -- id 4 is still running
@@ -979,6 +981,70 @@ void test_mcp() {
         CHECK(rep[4].at("result").at("structuredContent").at("stopped").str() == "timeout",
               "the long run (idle=off, no until) still runs its own budget out normally -- "
               "status polling alongside it changes nothing about how it stops");
+    }
+
+    SECTION("MCP: status reports in_flight for a long NON-run tool too, not just run (#490)");
+    {
+        // The case `status` exists to catch, and the one a `run`-only in_flight was blind
+        // to: the worker is wedged inside some OTHER tool. `monitor STEP <n>` is that tool
+        // here -- it advances the guest inside the worker for about a second and publishes
+        // no snapshot at all, so `generation` stays 0 while it runs. An `in_flight` sourced
+        // from the run snapshot would say "idle" throughout.
+        Machine m;
+        if (!loadAltair680(m)) return;
+
+        FeedBuf      feedBuf;
+        std::istream feedIn(&feedBuf);
+        std::ostringstream out;
+
+        std::thread worker([&] { runMcp(m, feedIn, out, ""); });
+
+        int  id  = 0;
+        auto req = [&](const std::string& params) {
+            std::ostringstream line;
+            line << R"({"jsonrpc":"2.0","id":)" << ++id
+                 << R"(,"method":"tools/call","params":)" << params << "}\n";
+            feedBuf.feed(line.str());
+        };
+
+        req(R"({"name":"status","arguments":{}})");  // id 1 -- nothing running yet
+        // id 2: ~10M single steps through the debugger, roughly a second of worker time.
+        req(R"({"name":"monitor","arguments":{"command":"STEP 10000000"}})");
+        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        req(R"({"name":"status","arguments":{}})");  // id 3 -- id 2 is still stepping
+
+        feedBuf.close();
+        worker.join();
+
+        std::map<int, Json> rep;
+        std::vector<int>    order;
+        std::istringstream  lines(out.str());
+        std::string         line;
+        while (std::getline(lines, line)) {
+            if (line.empty()) continue;
+            Json        j;
+            std::string err;
+            if (Json::parse(line, j, err)) {
+                rep[(int)j.at("id").integer()] = j;
+                order.push_back((int)j.at("id").integer());
+            }
+        }
+
+        const Json& s1 = rep[1].at("result").at("structuredContent");
+        const Json& s3 = rep[3].at("result").at("structuredContent");
+        CHECK(!s1.at("in_flight").boolean(), "status is idle before the monitor call starts");
+        CHECK(s3.at("in_flight").boolean(),
+              "status reports in_flight while the worker is inside a long `monitor`, not a run");
+        CHECK(s3.at("generation").integer() == 0,
+              "and it says so with no run snapshot ever published -- in_flight cannot be "
+              "coming from the `run` tool's own bookkeeping");
+
+        auto posOf = [&](int rid) {
+            return (size_t)(std::find(order.begin(), order.end(), rid) - order.begin());
+        };
+        CHECK(posOf(3) < posOf(2),
+              "the mid-monitor status reply is written before the monitor's own -- answered "
+              "out of band, not queued behind it");
     }
 
     SECTION("MCP: mem_fill, mem_search and mem_save round-trip through the bus");

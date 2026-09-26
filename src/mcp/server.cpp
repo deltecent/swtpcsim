@@ -347,14 +347,19 @@ Json toolList() {
                        p, {"id", "unit", "endpoint"}));
     }
     list.push(tool("status",
-                   "A guaranteed-non-blocking check (#490): board id, whether a `run` is "
-                   "currently executing, its step count and PC. Unlike every other tool, this "
-                   "one is answered directly by the reader thread rather than the worker, so it "
-                   "still answers while a run is wedged or mid-flight -- the exact case where "
-                   "`recv`, `regs`, even a fresh `who` would sit queued behind it. `pc`/`steps` "
-                   "are the last PUBLISHED slice boundary, never a live read of the running CPU "
-                   "(that would be a data race, not a status check) -- while `in_flight` is "
-                   "true, treat them as approximate and re-poll rather than exact. Because it "
+                   "A guaranteed-non-blocking check (#490): board id, whether the worker is "
+                   "currently dispatched on ANY request -- not just `run`; a long `monitor`/"
+                   "`mem_load`/`snapshot` counts too -- plus the step count and PC as of the "
+                   "last `run`. "
+                   "Unlike every other tool, this one is answered directly by the reader thread "
+                   "rather than the worker, so it still answers while the server is wedged or "
+                   "mid-flight on anything -- the exact case where `recv`, `regs`, even a fresh "
+                   "`who` would sit queued behind it. `pc`/`steps` come from `run` specifically "
+                   "and go stale the moment something else moves the machine: a `step` or a "
+                   "`monitor` command advances the real PC without updating them, and `steps` "
+                   "restarts at zero on the next `run`, so it can go backwards between runs. "
+                   "`generation` is the only field guaranteed to keep climbing, so use it (not "
+                   "`steps`) to tell 'still advancing' from 'stuck on the same slice.' Because it "
                    "can land ahead of requests queued before it, don't sequence it with the "
                    "rest of a script; poll it, standalone, whenever you need to know if the "
                    "server is still alive.",
@@ -581,8 +586,12 @@ Json breakpointJson(const Breakpoint& b) {
 // up-to-the-instruction value (and reading cpu->pc() off the reader thread while the worker
 // is running it would be a genuine data race, not just a stale read). Copied as a whole
 // struct under McpSession::statusMu, never touched field-by-field without that lock.
+// No `inFlight` field here on purpose: it used to mean "a `run` is executing," which made
+// `status` blind to a long `monitor`/`mem_load`/`snapshot` call -- the exact case it exists
+// to catch. `in_flight` in the reply is now read from `haveCurrentId` instead (the reader
+// thread's own "is the worker mid-request" flag, already there for cancellation), which is
+// true for whichever tool the worker is running, not just `run`. See statusResult().
 struct RunSnapshot {
-    bool        inFlight = false;
     uint64_t    seq      = 0;    // bumped on every publish -- lets a poller tell "still
                                   // advancing" from "the same slice as last time"
     uint64_t    steps    = 0;
@@ -616,10 +625,17 @@ std::string cpuBoardId(Machine& m) {
     return std::string();
 }
 
-// #490's out-of-band reply, built ONLY from the published snapshot -- see RunSnapshot's own
-// comment for why. Callable from either thread: the copy under statusMu is the only shared
-// state it touches, and everything after that is pure formatting.
-Json statusResult(McpSession& sess) {
+// #490's out-of-band reply. `in_flight` and the RunSnapshot fields come from two different
+// locks, taken one at a time and never nested -- see queueMu/haveCurrentId's own comment
+// (by runMcp's reader/worker split) for why `in_flight` has to be sourced there rather than
+// from the snapshot, and RunSnapshot's own comment for why the rest is a snapshot at all.
+// Callable from either thread.
+Json statusResult(McpSession& sess, std::mutex& queueMu, const bool& haveCurrentId) {
+    bool inFlight;
+    {
+        std::lock_guard<std::mutex> lk(queueMu);
+        inFlight = haveCurrentId;
+    }
     RunSnapshot snap;
     {
         std::lock_guard<std::mutex> lk(sess.statusMu);
@@ -627,15 +643,18 @@ Json statusResult(McpSession& sess) {
     }
     Json d = Json::obj();
     d["board"]      = Json(snap.boardId);
-    d["in_flight"]  = Json(snap.inFlight);
+    d["in_flight"]  = Json(inFlight);
     d["steps"]      = Json((long long)snap.steps);
     d["pc"]         = Json((long long)snap.pc);
     d["generation"] = Json((long long)snap.seq);
 
+    char pcHex[16];  // RunSnapshot::pc is uint32_t; "%04X" of a full 32-bit value needs 9
+                     // bytes, not the 8-bit CPU's usual 4 -- oversized on purpose.
+    std::snprintf(pcHex, sizeof pcHex, "%04X", (unsigned)snap.pc);
     std::string text = snap.boardId.empty() ? "(no board)" : snap.boardId;
-    text += snap.inFlight ? " busy" : " idle";
-    text += ", steps=" + std::to_string(snap.steps) + " pc=" + std::to_string(snap.pc);
-    if (snap.inFlight) text += " (last published slice boundary, not a live read)";
+    text += inFlight ? " busy" : " idle";
+    text += ", steps=" + std::to_string(snap.steps) + " pc=" + pcHex;
+    if (inFlight) text += " (pc/steps are the last run's published slice boundary, not a live read)";
     return dataResult(d, text);
 }
 
@@ -1037,21 +1056,20 @@ Json callTool(Machine& m, McpSession& sess, const std::string& name, const Json&
 
         // #490: publish a slice-boundary snapshot so `status`, answered out of band by the
         // reader thread, can report on THIS run without ever touching the Machine/CpuCore
-        // itself -- see RunSnapshot's own comment for why that split has to exist. One
-        // publish now (before the first slice runs) and one after each slice below; the
-        // trailing `inFlight:false` publish is right after the loop, alongside the `d`
-        // this call is about to return -- so a poller's last look always matches what the
-        // caller of `run` itself was told.
+        // itself -- see RunSnapshot's own comment for why that split has to exist, and
+        // statusResult()'s own comment for why `in_flight` itself is NOT one of these fields.
+        // One publish now (before the first slice runs), one after each slice below, and one
+        // right after the loop alongside the `d` this call is about to return -- so a
+        // poller's last look always matches what the caller of `run` itself was told.
         const std::string boardId = cpuBoardId(m);
-        auto publishStatus = [&](bool inFlight, uint64_t stepsSoFar) {
+        auto publishStatus = [&](uint64_t stepsSoFar) {
             std::lock_guard<std::mutex> lk(sess.statusMu);
-            sess.status.inFlight = inFlight;
             sess.status.boardId  = boardId;
             sess.status.steps    = stepsSoFar;
             sess.status.pc       = cpu->pc();
             ++sess.status.seq;
         };
-        publishStatus(true, 0);
+        publishStatus(0);
 
         const std::string until   = args.has("until") ? args.at("until").str() : std::string();
         long long         timeout = args.has("timeout_ms") ? args.at("timeout_ms").integer() : 2000;
@@ -1144,7 +1162,7 @@ Json callTool(Machine& m, McpSession& sess, const std::string& name, const Json&
             RunResult r = m.debug.run(2000);
             m.pump();
             steps += r.steps;
-            publishStatus(true, steps);  // #490: this slice's boundary, for `status` to read
+            publishStatus(steps);  // #490: this slice's boundary, for `status` to read
 
             // Keep wall-clock in step with the crystal (see the baseline above). Only when a
             // clock_hz was asked for; free() is the flat-out default and never sleeps here.
@@ -1192,8 +1210,9 @@ Json callTool(Machine& m, McpSession& sess, const std::string& name, const Json&
             }
         }
 
-        publishStatus(false, steps);  // #490: this call is done -- the next status poll should
-                                       // say idle, with this call's own final steps/pc
+        publishStatus(steps);  // #490: this call is done -- the next status poll's `steps`/`pc`
+                                // are this call's own final values (its `in_flight` comes from
+                                // `haveCurrentId`, which the caller below is about to clear)
 
         Json d = Json::obj();
         d["output"]  = Json(out);
@@ -1648,9 +1667,15 @@ struct QueuedMsg {
 //
 // The cap is generous on purpose: a cancellation is acted on in the reader BEFORE the
 // queue is touched, so it overtakes anything waiting -- but only if the reader is still
-// reading. Parking it is therefore the one thing that can delay a cancel, and it takes
-// this many un-drained requests to get there, which a client driving a guest will never
-// do by accident.
+// reading. Parking it is therefore one thing that can delay a cancel, and it takes this
+// many un-drained requests to get there, which a client driving a guest will never do by
+// accident.
+//
+// #490 adds a second, narrower way to park the reader: it now writes `status` replies
+// itself, through `safeReply`, which blocks on `outMu` if the worker is mid-write of a
+// large reply into a full pipe. That requires a client not reading its own stdout -- an
+// unusual failure on its own -- but while it lasts, the reader is parked on `outMu`
+// rather than on this cap, and a `notifications/cancelled` behind it waits the same way.
 constexpr size_t kMaxPending = 4096;
 
 } // namespace
@@ -1668,8 +1693,8 @@ int runMcp(Machine& m, std::istream& in, std::ostream& out, const std::string& m
     // #490: seed the status snapshot HERE, single-threaded, before the reader/worker split
     // below even exists -- the one place a direct CPU read is free. After the reader thread
     // starts, only the `run` tool's own worker-thread loop may write `status`, and only
-    // through statusMu (see RunSnapshot, statusResult()). Left at its default (no board,
-    // not in flight) on a backplane with no CPU at all.
+    // through statusMu (see RunSnapshot, statusResult()). Left at its default (no board) on
+    // a backplane with no CPU at all.
     if (m.cpu()) {
         sess.status.boardId = cpuBoardId(m);
         sess.status.pc      = m.cpu()->pc();
@@ -1732,16 +1757,24 @@ int runMcp(Machine& m, std::istream& in, std::ostream& out, const std::string& m
                 continue;  // acted on immediately -- never queued, never replied to
             }
             // #490: `status` MUST answer even while the worker is stuck inside a wedged or
-            // long-running `run` -- adding it as an ordinary tool would not do that, since
-            // it would just sit in `pending` behind the very call it exists to report on
-            // (deltecent's own point on the issue: guaranteed-non-blocking is a property of
-            // the transport, not the tool). So, like a cancellation, it is answered HERE,
-            // straight from the published RunSnapshot, never queued and never touching the
-            // Machine -- see statusResult(). Deliberately skips the currentId/haveCurrentId
-            // bookkeeping below: a status call is never itself the target of a cancel.
+            // long-running call of ANY kind -- adding it as an ordinary tool would not do
+            // that, since it would just sit in `pending` behind the very call it exists to
+            // report on (deltecent's own point on the issue: guaranteed-non-blocking is a
+            // property of the transport, not the tool). So, like a cancellation, it is
+            // answered HERE: `in_flight` reads `haveCurrentId` (below) under `mu`, and the
+            // rest of the reply comes from the published RunSnapshot under `sess.statusMu`
+            // -- see statusResult(). Deliberately does NOT set `currentId`/`haveCurrentId`
+            // itself: a status call is never in `pending` and never itself the target of a
+            // cancel, so it must stay invisible to that bookkeeping, not just skip it.
             if (qm.parseOk && qm.req.at("method").str() == "tools/call" &&
                 qm.req.at("params").at("name").str() == "status") {
-                safeReply(qm.req.at("id"), statusResult(sess));
+                // `statusResult()` is evaluated to a plain Json value HERE, fully, before
+                // `safeReply` is even called -- so `mu`/`statusMu` are both already released
+                // by the time `safeReply` takes `outMu`. Keep it that way: folding this into
+                // `safeReply`'s own body (locking `outMu` first, then calling `statusResult`
+                // inside it) would nest `outMu` around `mu`/`statusMu`, and nothing else in
+                // this file ever takes `outMu` first -- that would be a new, real ordering.
+                safeReply(qm.req.at("id"), statusResult(sess, mu, haveCurrentId));
                 continue;
             }
             std::unique_lock<std::mutex> lk(mu);
