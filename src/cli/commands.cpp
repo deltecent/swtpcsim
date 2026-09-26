@@ -543,8 +543,9 @@ static const std::vector<CommandDef> kCommands = {
     // -- which nothing else wanted -- and it gets out of DISASM's way, which drops
     // to DI now that the D-cluster is one shorter.
     {"UNMOUNT", true, nullptr, "UNMOUNT <id>:<u>",  // U
-     "The socket is then EMPTY -- those pages float to FF, exactly as a card with\n"
-     "no chip in it does.\n"
+     "Takes the disk, tape or ROM out of the unit. A drive or a tape recorder is then\n"
+     "empty. A ROM socket is then empty too: those pages float to FF, as on a board\n"
+     "with no chip in the socket.\n"
      "  U dc40:drive0"},
     {"DISCONNECT", true, nullptr, "DISCONNECT <id>:<u>",  // DISC
      "The line then goes nowhere. NOT an error: an unconnected 6850 sits there with\n"

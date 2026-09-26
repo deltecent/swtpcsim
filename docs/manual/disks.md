@@ -111,6 +111,7 @@ And taking it out:
 
 ```
 swtpcsim> UNMOUNT dc40:drive1
+dc40:drive1: unmounted (the drive is now empty)
 ```
 
 The socket is empty again. The guest sees a drive with no disk in it, which is a thing a real drive

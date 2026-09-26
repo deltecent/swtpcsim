@@ -3922,9 +3922,12 @@ bool Monitor::exec(const std::string& line, std::ostream& out) {
             // problem and CREATE would not touch it.
             if (!create) {
                 std::error_code ec;
+                // tokenize() keeps a quoted path's opening `"` and drops the closing one;
+                // put it back so the suggestion pastes as it stands (#574).
+                const bool quoted = !a[2].empty() && a[2][0] == '"';
                 if (!std::filesystem::exists(b->resolvePath(mountPath), ec))
                     out << b->id << ": to make a blank one, add CREATE: MOUNT " << a[1] << " "
-                        << a[2] << " CREATE\n";
+                        << a[2] << (quoted ? "\"" : "") << " CREATE\n";
             }
             failed_ = true;
         } else {
@@ -3989,8 +3992,12 @@ bool Monitor::exec(const std::string& line, std::ostream& out) {
             out << b->id << ": " << err << "\n";
             failed_ = true;
         } else {
-            out << b->id << ":" << u.name
-                << ": unmounted (the socket is now EMPTY -- those pages float to FF)\n";
+            // Only a ROM socket has pages to float; a drive or a recorder is just empty (#577).
+            const char* now = u.kind == UnitKind::Rom
+                                  ? "the socket is now EMPTY -- those pages float to FF"
+                              : u.kind == UnitKind::Tape ? "the recorder is now empty"
+                                                         : "the drive is now empty";
+            out << b->id << ":" << u.name << ": unmounted (" << now << ")\n";
         }
         flush(out);  // ...and a sync-on-eject that complained must say so HERE. See MOUNT.
         return true;
