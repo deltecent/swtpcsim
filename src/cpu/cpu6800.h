@@ -38,6 +38,7 @@ public:
     const char* isa() const override { return "6800"; }
 
     std::vector<RegDef> registers() override;
+    void captureRegs(std::vector<uint32_t>& out) override;
     void reset(Reset) override;
     StepResult step(Bus& bus) override;
 

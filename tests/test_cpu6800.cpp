@@ -437,4 +437,27 @@ void test_cpu6800() {
         CHECK(clone.pc() == 0xDEF0, "PC survived");
         CHECK(get(clone, "CC") == 0xEF, "and every condition-code bit survived");
     }
+
+    // captureRegs() is the recorder's fast copy of the register list, and a second copy
+    // of its ORDER. Hold it to registers(): scramble the core through the reflected
+    // setters, then the two must agree on every entry. Many rounds, so every flag and
+    // every half is seen both ways.
+    SECTION("6800: captureRegs() IS registers(), value for value, in order");
+    {
+        Cpu6800               core;
+        std::vector<RegDef>   defs = core.registers();
+        std::vector<uint32_t> fast;
+        uint32_t              seed = 0x2468ACE1u;
+        bool                  same = true;
+        for (int round = 0; round < 64 && same; ++round) {
+            for (const RegDef& d : defs) {
+                seed = seed * 1664525u + 1013904223u;  // any spread will do
+                d.set(seed >> 8);
+            }
+            core.captureRegs(fast);
+            same = fast.size() == defs.size();
+            for (size_t i = 0; same && i < defs.size(); ++i) same = fast[i] == defs[i].get();
+        }
+        CHECK(same, "6800: captureRegs() matches registers() exactly");
+    }
 }

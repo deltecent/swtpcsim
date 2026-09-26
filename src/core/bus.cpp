@@ -81,6 +81,22 @@ uint8_t Bus::peek(uint16_t addr) const {
     return 0xFF;  // nobody could answer without side effects. Neither can we.
 }
 
+void Bus::peekBytes(uint16_t addr, uint8_t* out, int n) const {
+    for (int i = 0; i < n; ++i) {
+        uint16_t a = (uint16_t)(addr + i);
+        // Anything but a trusted, single-driver page -- a dirty cache, a slow page, or
+        // verify mode wanting to prove the slot -- is peek()'s own business.
+        const Slot& s = memRead_[a >> 8];
+        if (dirty_ || verify_ || s.slow) {
+            out[i] = peek(a);
+            continue;
+        }
+        uint8_t v = 0xFF;
+        if (s.who) s.who->peek(a, v);  // exactly peek()'s fast path
+        out[i] = v;
+    }
+}
+
 static const char* cycleName(Cycle t) {
     switch (t) {
     case Cycle::MemRead: return "read";

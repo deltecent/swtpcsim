@@ -93,6 +93,20 @@ public:
 
     virtual std::vector<RegDef> registers() = 0;
 
+    // registers()' VALUES, in registers()' order -- exactly what get() on every RegDef
+    // would return, without building the list. CPU HISTORY snapshots the machine before
+    // EVERY instruction, and walking twenty std::function getters to do it cost more
+    // than executing the instruction did.
+    //
+    // The default IS that walk, so a new core is correct the day it lands; a core on
+    // the hot path overrides it with plain loads. An override is a second copy of the
+    // ORDER, so tests/test_cpu6800.cpp checks it against registers().
+    virtual void captureRegs(std::vector<uint32_t>& out) {
+        std::vector<RegDef> regs = registers();
+        out.resize(regs.size());
+        for (size_t i = 0; i < regs.size(); ++i) out[i] = regs[i].get();
+    }
+
     // Both resets: PC<-0 and interrupts off. NEITHER TOUCHES MEMORY (DESIGN.md 6)
     // -- a core has no memory to touch, which is the tidiest possible proof.
     virtual void reset(Reset) = 0;

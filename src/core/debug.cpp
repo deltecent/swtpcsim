@@ -414,13 +414,21 @@ RunResult Debugger::run(uint64_t maxSteps, bool clearPending) {
             return cycleHit_ != 0;
         });
 
-    // Reflected registers for BREAK <addr> IF <expr>. The RegDef list is snapshotted
-    // ONCE -- it is stable across a run (its get() closures read live state), so a
-    // conditional breakpoint costs no per-step allocation -- and looked up by name,
-    // so it never learns what a 6800 is and a future 6809 inherits it (DESIGN.md 3.0.3).
-    std::vector<RegDef> regs = cpu->registers();
-    Expr::Resolver resolveReg = [&regs](const std::string& name, uint32_t& out) -> bool {
-        for (const RegDef& rd : regs) {
+    // Reflected registers for BREAK <addr> IF <expr>, and for putting the CPU back when
+    // a cycle breakpoint unwinds an instruction. The RegDef list is built at most ONCE
+    // a run -- it is stable across a run (its get() closures read live state), so a
+    // conditional breakpoint costs no per-step allocation -- and only when one of those
+    // actually needs it: run() is called in slices of a couple of thousand instructions,
+    // and a slice with no conditional breakpoint and no cycle stop never asks. Looked up
+    // by name, so it never learns what a 6800 is and a future 6809 inherits it (DESIGN.md 3.0.3).
+    // The per-instruction recorder does not use it at all: see captureRegs below.
+    std::vector<RegDef> regsList;
+    auto regDefs = [&regsList, cpu]() -> std::vector<RegDef>& {
+        if (regsList.empty()) regsList = cpu->registers();
+        return regsList;
+    };
+    Expr::Resolver resolveReg = [&regDefs](const std::string& name, uint32_t& out) -> bool {
+        for (const RegDef& rd : regDefs()) {
             if (rd.name.size() != name.size()) continue;
             bool eq = true;
             for (size_t i = 0; i < name.size(); ++i)
@@ -448,7 +456,8 @@ RunResult Debugger::run(uint64_t maxSteps, bool clearPending) {
         // would print for the instruction about to run -- into the instruction ring. The
         // sibling of the bus flight recorder in armObserver(); always on while running.
         // A ring slot's regs vector keeps its capacity across wraps, so a warmed ring
-        // records without allocating. Reuses the once-snapshotted `regs` for the getters.
+        // records without allocating. captureRegs() fills it with registers()' values
+        // as plain loads -- one virtual call, not a std::function per register.
         // Hoisted out of the block below so the CycleBreakBefore catch can read it
         // back: it is the pristine register snapshot to restore the CPU from.
         InsnRec* slot;
@@ -461,11 +470,9 @@ RunResult Debugger::run(uint64_t maxSteps, bool clearPending) {
                 insnRingHead_ = (insnRingHead_ + 1) % kInsnHistoryCap;
             }
             slot->pc = cpu->pc();
-            slot->regs.resize(regs.size());
-            for (size_t i = 0; i < regs.size(); ++i) slot->regs[i] = regs[i].get();
+            cpu->captureRegs(slot->regs);
             slot->nbytes = 3;
-            for (uint8_t k = 0; k < 3; ++k)
-                slot->bytes[k] = m_.bus.peek((uint16_t)(slot->pc + k));
+            m_.bus.peekBytes(slot->pc, slot->bytes.data(), 3);
         }
 
         // A fresh instruction: forget any conditional cycle matches recorded for the last
@@ -486,6 +493,7 @@ RunResult Debugger::run(uint64_t maxSteps, bool clearPending) {
             // architectural state from the boundary snapshot: PC back onto the
             // instruction, every register pristine. Order-independent -- pair/half
             // aliases restore to the same snapshot value.
+            std::vector<RegDef>& regs = regDefs();
             for (size_t i = 0; i < regs.size(); ++i) regs[i].set(slot->regs[i]);
 
             r.why = StopReason::Breakpoint;
@@ -563,7 +571,8 @@ RunResult Debugger::run(uint64_t maxSteps, bool clearPending) {
             // same names as resolveReg, but reading the boundary snapshot rather than the
             // live registers, so "A" is the accumulator as the instruction FOUND it.
             Expr::Resolver resolveBefore =
-                [&regs, slot](const std::string& name, uint32_t& outv) -> bool {
+                [&regDefs, slot](const std::string& name, uint32_t& outv) -> bool {
+                const std::vector<RegDef>& regs = regDefs();
                 for (size_t i = 0; i < regs.size(); ++i) {
                     if (regs[i].name.size() != name.size()) continue;
                     bool eq = true;
