@@ -17,11 +17,12 @@
 // first, and there would be no way left to type the other. Renaming REGS to REG
 // would break exactly this, and tests/test_cli.cpp fails if anyone does.
 //
-// EVERY command is in this table, INCLUDING the ones that do not exist yet. That
-// is the point: if only the built commands were listed, `S` would mean SHOW today
-// and STEP the day the CPU lands, and a user's fingers would silently start doing
-// something else. Reserved commands resolve, then say what they are waiting for.
-// Abbreviations are a contract, and the contract is fixed now.
+// A command that is coming can be listed BEFORE it exists (built = false). That
+// is the point: if only the built commands were listed, `S` would have meant SHOW
+// until the CPU landed and STEP after, and a user's fingers would silently start
+// doing something else. A reserved command resolves, then says what it is waiting
+// for. Abbreviations are a contract. None is reserved today: RECORD, REPLAY and
+// STOP were, and were dropped (test_cli.cpp checks REC/REP/STO no longer resolve).
 
 #include "core/command.h"  // CommandDef itself -- a BOARD can declare one, so it lives in core
 
