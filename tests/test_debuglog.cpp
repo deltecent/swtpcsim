@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <iostream>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -200,6 +201,33 @@ void test_debuglog() {
         m.running = false;  // and it dashes again the moment the machine stops
         const std::string stopped = capture([&] { dbg::line(ch) << "y\n"; });
         CHECK(stopped.rfind("----  mds0: y", 0) == 0, "stopping returns the column to dashes");
+    }
+
+    SECTION("a raw terminal: CR LF, and a report never starts on the guest's line");
+    {
+        dbg::Channel term("rawterm", {"x"});
+        term.enable("x", err);
+        dbg::setSink(dbg::Sink::Stderr, "", err);
+        bool raw = true, mid = true;
+        int  done = 0;
+        dbg::setTerminal({[&] { return raw; }, [&] { return mid; }, [&] { ++done, mid = false; }});
+        std::ostringstream screen;
+        std::streambuf*    was = std::cerr.rdbuf(screen.rdbuf());
+        dbg::line(term) << "one\n";  // the guest is half-way through a line
+        dbg::line(term) << "two\n";  // the first report ended at column 0
+        raw = false;                // the monitor prompt: the terminal adds its own CR
+        mid = true;
+        dbg::line(term) << "three\n";
+        std::cerr.rdbuf(was);
+        CHECK(screen.str() == "\r\n----  rawterm: one\r\n----  rawterm: two\r\n----  rawterm: three\n",
+              "raw: off the guest's line, CR LF; not raw: untouched");
+        CHECK(done == 3, "each raw newline tells the console it is at column 0");
+
+        mid = true;  // a file sink is never touched
+        raw = true;
+        const std::string f = capture([&] { dbg::line(term) << "four\n"; });
+        CHECK(f == "----  rawterm: four\n", "a file: plain LF, no leading break");
+        dbg::setTerminal({});
     }
 
     // Leave the global facility as we found it, so other suites see a clean sink and

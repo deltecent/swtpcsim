@@ -302,6 +302,13 @@ int main(int argc, char** argv) {
         if (!m.running) return std::nullopt;
         return m.bus.instrPc();
     });
+    // And the terminal: raw while the guest runs, so a report line brings its own CR.
+    dbg::setTerminal({[] { return Console::instance().raw(); },
+                      [] {
+                          Console::instance().flush();
+                          return Console::instance().midLine();
+                      },
+                      [] { Console::instance().atLineStart(); }});
 
     if (!builtin.empty()) {
         const BuiltinMachine* b = findMachine(builtin);

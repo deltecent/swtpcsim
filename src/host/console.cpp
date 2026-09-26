@@ -215,6 +215,7 @@ size_t Console::write(const uint8_t* buf, size_t n) { return filter_.write(buf, 
 size_t Console::writeRaw(const uint8_t* buf, size_t n) {
     size_t w = platform::writeOutput(buf, n);
     written_ += (uint64_t)w;
+    if (w) midLine_ = buf[w - 1] != '\n';
 
     // THE LOG TAP. This is the one seam every screen byte passes through, so the
     // transcript catches all of it -- guest output and echoed keystrokes alike -- with a

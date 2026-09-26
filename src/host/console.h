@@ -197,6 +197,12 @@ public:
     // knows the guest has finished answering and it is safe to leave.
     uint64_t written() const { return written_; }
 
+    // Is the cursor past column 0? True after any byte but a newline. The debug log reads
+    // it so a report line does not start in the middle of the guest's, and sets it back
+    // with atLineStart() when its own line ends (core/debuglog.h, Terminal).
+    bool midLine() const { return midLine_; }
+    void atLineStart() { midLine_ = false; }
+
     // How many times the guest has ASKED FOR A BYTE THAT WILL NEVER COME -- polled the
     // keyboard, after the input ended, and found it empty. This is the difference
     // between a guest that is BUSY and a guest that is BEGGING, and CONSOLE mode cannot
@@ -297,6 +303,7 @@ private:
     bool     taken_    = false;
     int      rawDepth_ = 0;
     uint64_t written_  = 0;
+    bool     midLine_  = false;
     uint64_t consumed_ = 0;
     uint64_t dropped_  = 0;
     mutable uint64_t starved_ = 0;  // counted in readable(), which is const -- see below

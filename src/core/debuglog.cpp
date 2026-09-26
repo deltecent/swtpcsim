@@ -26,6 +26,34 @@ std::vector<Channel*>& registry() {
 }
 
 Sink&        sink()     { static Sink s = Sink::Stderr; return s; }
+Terminal&    terminal() { static Terminal t; return t; }
+
+// "\n" out as "\r\n", onto the stream underneath, for a terminal in raw mode.
+class CrlfBuf : public std::streambuf {
+public:
+    void target(std::streambuf* t) { t_ = t; }
+
+protected:
+    int_type overflow(int_type c) override {
+        if (traits_type::eq_int_type(c, traits_type::eof())) return traits_type::not_eof(c);
+        if (traits_type::to_char_type(c) == '\n') {
+            if (t_->sputc('\r') == traits_type::eof()) return traits_type::eof();
+            if (t_->sputc('\n') == traits_type::eof()) return traits_type::eof();
+            if (auto& done = terminal().lineDone) done();
+            return c;
+        }
+        return t_->sputc(traits_type::to_char_type(c));
+    }
+    int sync() override { return t_->pubsync(); }
+
+private:
+    std::streambuf* t_ = nullptr;
+};
+
+bool rawTerminal() {
+    auto& t = terminal();
+    return sink() != Sink::File && t.raw && t.raw();
+}
 std::string& filePath() { static std::string p; return p; }
 
 std::ofstream& fileStream() {
@@ -157,6 +185,13 @@ std::string sinkName() {
 }
 
 std::ostream& out() {
+    if (rawTerminal()) {
+        static CrlfBuf      buf;
+        static std::ostream os(&buf);
+        buf.target(sink() == Sink::Stdout ? std::cout.rdbuf() : std::cerr.rdbuf());
+        os.setf(std::ios::unitbuf);  // as std::cerr: each line on the screen as it is made
+        return os;
+    }
     switch (sink()) {
         case Sink::Stdout: return std::cout;
         case Sink::File:   return fileStream();
@@ -173,8 +208,14 @@ void setPcProvider(std::function<std::optional<uint16_t>()> p) {
     pcProvider() = std::move(p);
 }
 
+void setTerminal(Terminal t) {
+    terminal() = std::move(t);
+}
+
 std::ostream& line(const Channel& ch) {
     std::ostream& os = out();
+    if (rawTerminal())
+        if (auto& mid = terminal().midLine; mid && mid()) os << "\n";  // off the guest's line
 
     std::optional<uint16_t> pc;
     if (auto& p = pcProvider()) pc = p();
