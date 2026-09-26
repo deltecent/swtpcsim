@@ -359,6 +359,27 @@ void test_mcp() {
         CHECK(back.str().find("caf\xc3\xa9") != std::string::npos, "and the UTF-8 in it survived the trip");
     }
 
+    SECTION("MCP: a \\uXXXX control byte decodes to that one raw byte for the guest");
+    {
+        // The INPUT direction of the section above, and the reason issue #491 was filed:
+        // `send`/`run` hand their string straight to the console, so what a client may
+        // type at the guest is decided here, in the parser. ^C and ^Z must arrive as one
+        // byte each -- they are how a guest program is broken off.
+        Json j;
+        std::string err;
+        CHECK(Json::parse(R"("A\u0003B\u001aC")", j, err), "a \\u-escaped control byte parses");
+        const std::string in = j.str();
+        CHECK(in.size() == 5, "each escape decodes to exactly one byte");
+        CHECK(in == std::string("A\x03" "B\x1a" "C", 5), "and it is the byte the escape names");
+
+        // THE TRAP: JSON has no \x escape. We are lenient with an unknown one (drop the
+        // backslash, keep the letter) rather than rejecting the request, so `\x03` types
+        // three ordinary characters at the guest. That looks exactly like "control bytes
+        // are filtered out and printable text gets through", which is what it was read as.
+        CHECK(Json::parse(R"("\x03")", j, err), "\\x03 is not rejected -- we are lenient");
+        CHECK(j.str() == "x03", "it is NOT a control byte: it types the characters x03");
+    }
+
     SECTION("MCP: interactive tools drive a running guest (MON680)");
     {
         Machine m;

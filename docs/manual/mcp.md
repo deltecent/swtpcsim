@@ -61,6 +61,12 @@ monitor and `run {input: "D", until: "+++"}` to boot FLEX, then `run {input: "CA
 returns — so a `tools/call` always comes back, unlike a bare `RUN` through the `monitor`
 tool, which under a pipe waits on a stdin that is the JSON-RPC channel itself.
 
+What you type goes to the guest byte for byte, control characters included, and every line in
+the machine is 8-bit clean. A control byte is written as a JSON `\uXXXX` escape: `\u0003` is
+^C, `\u001b` is ESC. So `send {text: "\u001b"}` pauses a FLEX listing exactly as the ESC key
+would. Note that `\x03` is **not** JSON — JSON has no `\x` escape — and it arrives at the
+guest as the three ordinary characters `x03` rather than as a control byte.
+
 By default the guest runs flat out, which is what you want for booting and for driving a
 prompt. But when a real device is on a serial line and you have set a clock speed with `SET
 cpu0 clock_hz=…`, `run` paces the guest to that clock, so a reply the device sends a fraction

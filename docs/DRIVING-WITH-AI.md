@@ -173,6 +173,19 @@ off the board itself, so ask `board_types` what a board can be told rather than 
 | `regs` | — | CPU registers now (`pc`, `halted`, `registers{}`). |
 | `status` | — | Answered at once, even mid-`run`: `in_flight`, and the `pc`/`steps` of the last `run` (see below). |
 
+**Control bytes: use `\uXXXX`.** `input` and `text` are raw bytes — whatever you pass reaches
+the guest untouched, control characters included, and every line in the machine is 8-bit
+clean. Write a control byte as the JSON escape it is: `\u0003` for ^C, `\u001a` for ^Z,
+`\u001b` for ESC.
+
+```
+send {text: "\u001b"}                        # ESC: FLEX pauses the listing in progress
+```
+
+`\x03` is **not** JSON — there is no `\x` escape in the format — and it is not rejected
+either: it reaches the guest as the three ordinary characters `x03`. If a control byte seems
+to vanish while printable text gets through, that is the reason.
+
 **`monitor`** `{command}` runs any one monitor command (`CONNECT`, `MOUNT`, `SET`, `DUMP`,
 `DISASM`, …) and returns its text — the escape hatch for anything without a dedicated tool.
 

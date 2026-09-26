@@ -168,7 +168,10 @@ Json toolList() {
         p["from"]       = intSchema("Optional start address: set PC here first (like RUN <addr>). "
                                     "Omit to resume from the current PC.");
         p["input"]      = strSchema("Optional keystrokes to type at the console before running "
-                                    "(raw bytes; add a trailing \\r to submit a CP/M line).");
+                                    "(raw bytes; add a trailing \\r to submit a FLEX line). "
+                                    "Control bytes go through untouched -- write one as the JSON "
+                                    "escape it is: \\u0003 is ^C, \\u001a is ^Z, \\u001b is ESC. "
+                                    "\\x03 is NOT JSON and arrives as the characters x03.");
         p["until"]      = strSchema("Optional: stop as soon as this substring appears in the "
                                     "output (e.g. a prompt like \"A0>\").");
         p["timeout_ms"] = intSchema("Wall-clock budget for this call in ms (default 2000). By "
@@ -195,7 +198,10 @@ Json toolList() {
     {
         Json p = Json::obj();
         p["text"] = strSchema("Keystrokes to type at the console (raw bytes). Does NOT run the "
-                              "guest -- follow with `run` (or use run's own `input`).");
+                              "guest -- follow with `run` (or use run's own `input`). Control "
+                              "bytes go through untouched -- write one as the JSON escape it is: "
+                              "\\u0003 is ^C, \\u001a is ^Z, \\u001b is ESC. \\x03 is NOT JSON "
+                              "and arrives as the characters x03.");
         list.push(tool("send", "Type at the guest console without running it.", p, {"text"}));
     }
     list.push(tool("recv",
