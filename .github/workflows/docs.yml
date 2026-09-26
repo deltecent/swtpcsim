@@ -31,6 +31,7 @@ on:
       - 'docs/**'
       - 'examples/**/README.md'
       - 'tools/build-docs.sh'
+      - 'tools/chrome-print.py'
       - '.github/workflows/docs.yml'
   # On a PR we BUILD but do not commit -- it catches a broken document (a bad ORDER entry,
   # an unexpanded {{TOKEN}}, a character our fonts do not have) before it reaches master,
@@ -40,6 +41,7 @@ on:
       - 'docs/**'
       - 'examples/**/README.md'
       - 'tools/build-docs.sh'
+      - 'tools/chrome-print.py'
       - '.github/workflows/docs.yml'
   workflow_dispatch:
 
