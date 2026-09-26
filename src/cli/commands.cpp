@@ -307,7 +307,7 @@ static const std::vector<CommandDef> kCommands = {
      "  MACHINE none ; BOARDS ADD 6800 cpu0 ; ... ; POWER ; RUN E000"},
 
     // ---- everything else, ranked by how often you type it ----
-    {"SET", true, nullptr, "SET <id>[:<u>]|CONSOLE|DISPLAY|REG|BUS <k>=<v>",  // SE (beats SEARCH)
+    {"SET", true, nullptr, "SET <id>[:<u>]|CONSOLE|DISPLAY|MACHINE|REG|BUS <k>=<v>",  // SE (beats SEARCH)
      "Each property has a base of its own -- an address is hex, a baud rate is decimal.\n"
      "SHOW <id> lists them all, with each value.\n"
      "\n"
@@ -318,17 +318,20 @@ static const std::vector<CommandDef> kCommands = {
      "CONSOLE and DISPLAY are the HOST's terminal and video window rather than\n"
      "boards, and they take settings the same way. REG is a CPU register (see REGS),\n"
      "and BUS is the backplane's own diagnostics rather than anything plugged into it.\n"
+     "MACHINE is the machine itself: its name is what SHOW MACHINE prints, the video\n"
+     "window's title, and what CONFIG SAVE writes.\n"
      "  SET mem0 fill=zero\n"
      "  SET kc0:tape mode=record   the tape in the recorder, not the recorder\n"
      "  SET vdm0 width=1024      how wide the video window opens, in pixels (auto = ~half the screen)\n"
      "  SET DISPLAY focus=on     the video window takes the keyboard, not the terminal\n"
      "  SET DISPLAY crt=on       paint the window like the period tube: soft phosphor and 4:3\n"
+     "  SET MACHINE name=mybox   what CONFIG SAVE calls the machine\n"
      "  SET REG A=3F             a register in the CPU that is in the socket\n"
      "  SET BUS UNCLAIMED=WARN   warn on a cycle no board answered\n"
      "                           (also CONTENTION=WARN|ERROR|SILENT, UNCLAIMED=WARN|HALT|SILENT)"},
     {"SHOW", true, nullptr,
      "SHOW <id>|BOARDS|BOARD <type> [UNITS]|MACHINES|MACHINE [<name>]|BUS [MAP|IRQ|CONTENTION]|"
-     "ROMS|MOUNTS|PATHS|CONSOLE|DISPLAY|SYMBOLS|VERSION",
+     "ROMS|MOUNTS|PATHS|CONSOLE|DISPLAY|SYMBOLS|CLOCK|VERSION",
      "  SHOW mem0        regions and properties\n"
      "  SHOW BOARDS      the board types you can add\n"
      "  SHOW BOARD dc4   one type's description and properties (add UNITS for just those)\n"
@@ -342,6 +345,7 @@ static const std::vector<CommandDef> kCommands = {
      "  SHOW DISPLAY     the host video window: keyboard focus, and the CRT look\n"
      "  SHOW TERMINAL    the built-in terminal's transforms (strip7out, cr, bsdel, ...)\n"
      "  SHOW SYMBOLS     the loaded symbols (SHOW SYMBOLS SIO* filters); load them with SYMBOLS\n"
+     "  SHOW CLOCK       emulated time: cycles since POWER, and what they are in seconds\n"
      "  SHOW ROMS        the ROM images built into this binary, and where each came from\n"
      "  SHOW VERSION     which build this is, and the commit it was built from"},
     {"DEPOSIT", true, nullptr, "DEPOSIT <addr> <bytes...>",  // DE

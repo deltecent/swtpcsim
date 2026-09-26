@@ -211,6 +211,7 @@ private:
     void showMounts(std::ostream& out);  // every mountable unit, across every board
     void showPaths(std::ostream& out);   // what a path resolves against -- 3 answers
     void showVersion(std::ostream& out); // which build this is, and which commit
+    void showClock(std::ostream& out);   // emulated time: cycles since POWER, in seconds
     void showSymbols(const std::vector<std::string>& args, std::ostream& out);
     void flush(std::ostream& out);  // print anything the bus or a board said
 

@@ -119,6 +119,21 @@ time, so flat out it retires a "three-second" timeout in milliseconds of yours �
 anything the guest times against the *outside* world (a transfer through a serial port) wants the
 real crystal. The troubleshooting chapter has the full story.
 
+To see where the guest's own clock has got to, ask the machine:
+
+```
+swtpcsim> SHOW CLOCK
+clock  (emulated time -- cycles since POWER, and what they are worth)
+
+  elapsed    1.103268 s   (2206536 cycles)
+  crystal    2000000 Hz   SET cpu0 clock_hz=N
+  pacing     free -- emulated seconds pass as fast as the host allows
+```
+
+Elapsed is counted in cycles since power and divided by the crystal above, so it is the
+guest's time and not yours — booting FLEX costs the same emulated second whether you ran it
+flat out or at 1 MHz. That is the number to measure a guest's own timeout against.
+
 ### `idle` — the CPU stands down at a prompt
 
 At a prompt a guest is only spinning on a serial status register waiting for a keystroke, and flat

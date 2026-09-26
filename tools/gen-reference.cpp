@@ -245,7 +245,7 @@ const char* commandSummary(const std::string& n) {
     if (n == "MACHINE") return "Load a built-in machine by name (MACHINE none empties the backplane).";
     if (n == "STARTUP") return "Edit the machine's boot list (the commands CONFIG SAVE writes as startup = [...]).";
     if (n == "DO") return "Run a file of monitor commands, one per line, as if typed.";
-    if (n == "SET") return "Change a property of a board, the console, display, a register, or the bus.";
+    if (n == "SET") return "Change a property of a board, the console, display, a register, the bus, or the machine.";
     if (n == "SHOW") return "Display the state of a board, the bus, or the machine.";
     if (n == "DEPOSIT") return "Write bytes into memory at an address.";
     if (n == "EXAMINE") return "Point the front panel at an address (and show that byte).";

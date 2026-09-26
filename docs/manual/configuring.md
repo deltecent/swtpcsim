@@ -101,7 +101,8 @@ startup = ["RESET", "RUN"]
 
 ### `name`
 
-What the machine is called. That is the whole of it.
+What the machine is called — what `SHOW MACHINE` prints and the video window's title bar shows.
+That is the whole of it. `SET MACHINE name=` changes it at the prompt.
 
 ### `base` — start from a machine, and say what is *different*
 
@@ -496,6 +497,7 @@ we would never have known we had done it. Leave the `type` out.
 ## Saving and loading at the prompt
 
 ```
+swtpcsim> SET MACHINE name=mine
 swtpcsim> CONFIG SAVE mine.toml
 swtpcsim> CONFIG LOAD mine.toml
 ```
@@ -503,6 +505,11 @@ swtpcsim> CONFIG LOAD mine.toml
 **`CONFIG SAVE` writes the machine you are actually running** — every board, every property, as
 it stands right now, including everything you changed with `SET` since you started. It
 **round-trips**: load what it wrote and you get the machine back.
+
+**Name it before you save it.** A machine keeps the name it was built from — `none` if you
+started with `-n`, `swtpc` after `MACHINE swtpc` — and that is what lands in the file's
+`name` line. `SET MACHINE name=` changes it. The name is also what `SHOW MACHINE` prints and
+what the video window's title bar shows.
 
 **`CONFIG LOAD` is the whole machine, so it replaces the one you have** — the same thing that
 naming the file on the command line does, and there is no undo but the file you saved it to.

@@ -70,6 +70,37 @@ bool shouldPace(bool anyConsole, bool tty, bool anyRemoteLine, bool free) {
     return (anyConsole && tty) || anyRemoteLine;
 }
 
+// SET MACHINE's table: the settings that belong to the machine as a whole rather than to
+// any board in it. Today that is only the name -- what SHOW MACHINE prints, the video
+// window's title, and what CONFIG SAVE writes as `[machine] name`. Before this it was set only by the
+// loader, so a machine built at the prompt always saved as whatever it was built from
+// (`none`, `default`). Property rows rather than a hand-rolled check, so SET, its errors
+// and tab completion come out of the same generic path CONSOLE and DISPLAY use.
+static std::vector<Property> machineProperties(Machine& m) {
+    Property n;
+    n.name = "name";
+    n.help = "The machine's name -- what SHOW MACHINE prints and CONFIG SAVE writes";
+    n.kind = Kind::Str;
+    n.get  = [&m] { return Value::ofStr(m.name); };
+    n.set  = [&m](const Value& v, std::string& err) {
+        if (v.s().empty()) {
+            err = "machine: name cannot be empty";
+            return false;
+        }
+        // CONFIG SAVE writes the name raw inside `"..."`, which is how the loader reads a
+        // string back -- quotes stripped from the ends, nothing unescaped. A `"` inside it
+        // would close the string early, and a `#` after that is read as a comment, so
+        // the file would load as a different name or not at all. Refuse it here.
+        if (v.s().find('"') != std::string::npos) {
+            err = "machine: a name cannot contain a double quote";
+            return false;
+        }
+        m.name = v.s();
+        return true;
+    };
+    return {n};
+}
+
 std::vector<std::string> tokenize(const std::string& line) {
     std::vector<std::string> t;
     size_t i = 0;
@@ -600,7 +631,8 @@ Completions Monitor::complete(const std::string& line) {
         if (c == std::string::npos) {
             for (const auto& b : m_.boards()) keep(b->id);
             if (wantPseudo)
-                for (const char* kw : {"CONSOLE", "DISPLAY", "TERMINAL", "REG", "BUS"}) keep(kw);
+                for (const char* kw : {"CONSOLE", "DISPLAY", "TERMINAL", "MACHINE", "REG", "BUS"})
+                    keep(kw);
             // What comes after the board-id half depends on the board. For a target that
             // names a UNIT (MOUNT, CONNECT, a board verb), a bare id is finished only when
             // the board has exactly one unit of the right kind -- the lone-unit rule
@@ -716,6 +748,8 @@ Completions Monitor::complete(const std::string& line) {
                 props = Display::properties();
             } else if (is(target, "TERMINAL")) {
                 props = TerminalStream::properties();
+            } else if (is(target, "MACHINE")) {
+                props = machineProperties(m_);
             } else {
                 size_t c = target.find(':');
                 if (c == std::string::npos) {
@@ -1277,6 +1311,51 @@ void Monitor::showVersion(std::ostream& out) {
         row("tree", "MODIFIED when built -- this binary is not that commit");
     else
         row("tree", "clean");
+}
+
+// ---------------------------------------------------------------------------
+// SHOW CLOCK -- emulated time, which the machine has always known and never told
+// anyone (altairsim issue #492). Clock::now() is cycles since POWER; nothing before this
+// printed it, so the only way to answer "how long has the guest been running, in
+// its own seconds" was to count instructions and assume a rate.
+//
+// SECONDS COME FROM THE CRYSTAL, NEVER FROM THE HOST. now()/hz() is the guest's
+// own experience of time -- the same division a 9600-baud line does to turn a
+// character time into cycles -- so it stays true under replay and under a
+// snapshot. Reading steady_clock here would produce a number that looked similar
+// and meant something else.
+//
+// hz() is a DIVISOR and is never 0 (clock.h); free() is the pacing POLICY. So
+// emulated seconds are well defined even flat out -- they simply pass faster
+// than real ones, which is the distinction this command has to make plain.
+// ---------------------------------------------------------------------------
+void Monitor::showClock(std::ostream& out) {
+    const uint64_t  t  = m_.clock.now();
+    const long long hz = m_.clock.hz();
+
+    char buf[256];
+    auto row = [&](const char* label, const std::string& value) {
+        std::snprintf(buf, sizeof buf, "  %-9s  %s", label, value.c_str());
+        out << buf << "\n";
+    };
+
+    out << "clock  (emulated time -- cycles since POWER, and what they are worth)\n\n";
+
+    std::snprintf(buf, sizeof buf, "%.6f s   (%llu cycles)", (double)t / (double)hz,
+                  (unsigned long long)t);
+    row("elapsed", buf);
+
+    std::snprintf(buf, sizeof buf, "%lld Hz   SET cpu0 clock_hz=N", hz);
+    row("crystal", buf);
+
+    row("pacing", m_.clock.free()
+                      ? "free -- emulated seconds pass as fast as the host allows"
+                      : "paced -- emulated seconds keep step with real ones");
+
+    out << "\n  Elapsed is the GUEST's time, counted from the crystal above: the same\n"
+           "  division a 9600-baud line does to turn a character into cycles. It is\n"
+           "  not how long you have been sitting here, and running flat out is exactly\n"
+           "  when the two differ most.\n";
 }
 
 // A tiny glob: '*' matches any run, '?' any one character. Both operands are already
@@ -2975,7 +3054,7 @@ bool Monitor::exec(const std::string& line, std::ostream& out) {
         if (!need(2, "SHOW <id> | SHOW BOARDS | SHOW BOARD <type> | SHOW MACHINES"
                      " | SHOW MACHINE [<name>] | SHOW BUS [MAP|IRQ|CONTENTION] | SHOW ROMS"
                      " | SHOW MOUNTS | SHOW PATHS | SHOW DEBUG"
-                     " | SHOW VERSION"))
+                     " | SHOW CLOCK | SHOW VERSION"))
             return true;
         // The selector resolves by prefix -- `SHOW MOU` reaches MOUNTS, `SHOW VER` VERSION --
         // built-ins first, exactly the ordering the top-level dispatcher keeps (a keyword
@@ -2986,7 +3065,7 @@ bool Monitor::exec(const std::string& line, std::ostream& out) {
             {"BUS", "ROMS", "MOUNTS", "MOUNT", "PATHS", "PATH", "PWD", "CONSOLE", "DEBUG",
              "VERSION", "BUILD", "DISPLAY", "VIDEO", "WINDOW", "TERMINAL",
              "SYMBOLS", "SYMBOL", "SYM", "BOARDS", "BOARD", "MACHINES",
-             "MACHINE"});
+             "MACHINE", "CLOCK", "TIME"});
         if (sub.empty()) sub = upper(a[1]);
         // Reject trailing junk uniformly: a subcommand that has consumed all the arguments
         // it understands must report the first leftover token, not silently drop it -- a
@@ -3030,6 +3109,13 @@ bool Monitor::exec(const std::string& line, std::ostream& out) {
         if (sub == "DEBUG") {
             if (tooMany(2)) return true;
             showDebug(out);
+            return true;
+        }
+        // TIME as well as CLOCK: the question is asked both ways ("what time is it in
+        // there", "how fast is the clock"), and this one command answers both.
+        if (sub == "CLOCK" || sub == "TIME") {
+            if (tooMany(2)) return true;
+            showClock(out);
             return true;
         }
         // BUILD as well as VERSION: half the time the question being asked is "which
@@ -3308,13 +3394,13 @@ bool Monitor::exec(const std::string& line, std::ostream& out) {
     }
 
     if (cmd == "SET") {
-        if (!need(3, "SET <id>[:<unit>]|CONSOLE|DISPLAY|REG|BUS <key>=<value>")) return true;
+        if (!need(3, "SET <id>[:<unit>]|CONSOLE|DISPLAY|TERMINAL|MACHINE|REG|BUS <key>=<value>")) return true;
         // The target-KIND selector resolves by prefix -- `SET CON base=octal` reaches
         // CONSOLE -- built-ins first. An empty result is not one of these keywords: a[1]
         // is then a channel, unit or board id, and the paths below use the RAW a[1] to
         // look it up, so `SET acr0 ...` and `SET 6850 debug=...` are untouched.
         std::string setSel =
-            resolveKeyword(a[1], {"BUS", "REG", "CONSOLE", "DISPLAY", "TERMINAL"});
+            resolveKeyword(a[1], {"BUS", "REG", "CONSOLE", "DISPLAY", "TERMINAL", "MACHINE"});
         // Reject trailing junk, the same contract SHOW keeps: once the target and its
         // key=value are parsed, a leftover token is an error, not a silent drop. The
         // ceiling is 3 for the `key=value` form and 4 for the spaced `key value` form,
@@ -3426,7 +3512,7 @@ bool Monitor::exec(const std::string& line, std::ostream& out) {
                 if (tooMany(4)) return true;
             } else {
                 out << "usage: SET <id>[:<unit>] <key>=<value>  |  SET CONSOLE <key>=<value>"
-                       "  |  SET DISPLAY <key>=<value>\n";
+                       "  |  SET DISPLAY <key>=<value>  |  SET MACHINE name=<name>\n";
                 failed_ = true;
                 return true;
             }
@@ -3466,6 +3552,19 @@ bool Monitor::exec(const std::string& line, std::ostream& out) {
                 failed_ = true;
             } else {
                 out << "display: " << k << "=" << v << "\n";
+            }
+            return true;
+        }
+
+        // The machine itself -- its name, which is what CONFIG SAVE writes. Neither a
+        // board nor the host's, so it gets its own target.
+        if (setSel == "MACHINE") {
+            std::string err;
+            if (!setPropertyIn(machineProperties(m_), "machine", k, v, err)) {
+                out << err << "\n";
+                failed_ = true;
+            } else {
+                out << "machine: " << k << "=" << v << "\n";
             }
             return true;
         }

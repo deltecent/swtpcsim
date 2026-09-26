@@ -957,7 +957,7 @@ RESTORE before-boot.snap
 ### SET — `SE[T]`
 
 ```
-SET <id>[:<u>]|CONSOLE|DISPLAY|REG|BUS <k>=<v>
+SET <id>[:<u>]|CONSOLE|DISPLAY|MACHINE|REG|BUS <k>=<v>
 ```
 Each property has a base of its own -- an address is hex, a baud rate is decimal.
 SHOW <id> lists them all, with each value.
@@ -969,6 +969,8 @@ than the controller. SHOW <id> prints both tables, the board's and each unit's.
 CONSOLE and DISPLAY are the HOST's terminal and video window rather than
 boards, and they take settings the same way. REG is a CPU register (see REGS),
 and BUS is the backplane's own diagnostics rather than anything plugged into it.
+MACHINE is the machine itself: its name is what SHOW MACHINE prints, the video
+window's title, and what CONFIG SAVE writes.
 
 ```
 SET mem0 fill=zero
@@ -976,6 +978,7 @@ SET kc0:tape mode=record   the tape in the recorder, not the recorder
 SET vdm0 width=1024      how wide the video window opens, in pixels (auto = ~half the screen)
 SET DISPLAY focus=on     the video window takes the keyboard, not the terminal
 SET DISPLAY crt=on       paint the window like the period tube: soft phosphor and 4:3
+SET MACHINE name=mybox   what CONFIG SAVE calls the machine
 SET REG A=3F             a register in the CPU that is in the socket
 SET BUS UNCLAIMED=WARN   warn on a cycle no board answered
                          (also CONTENTION=WARN|ERROR|SILENT, UNCLAIMED=WARN|HALT|SILENT)
@@ -985,7 +988,7 @@ SET BUS UNCLAIMED=WARN   warn on a cycle no board answered
 ### SHOW — `SH[OW]`
 
 ```
-SHOW <id>|BOARDS|BOARD <type> [UNITS]|MACHINES|MACHINE [<name>]|BUS [MAP|IRQ|CONTENTION]|ROMS|MOUNTS|PATHS|CONSOLE|DISPLAY|SYMBOLS|VERSION
+SHOW <id>|BOARDS|BOARD <type> [UNITS]|MACHINES|MACHINE [<name>]|BUS [MAP|IRQ|CONTENTION]|ROMS|MOUNTS|PATHS|CONSOLE|DISPLAY|SYMBOLS|CLOCK|VERSION
 ```
 
 ```
@@ -1002,6 +1005,7 @@ SHOW CONSOLE     which unit holds the keyboard, and its transforms
 SHOW DISPLAY     the host video window: keyboard focus, and the CRT look
 SHOW TERMINAL    the built-in terminal's transforms (strip7out, cr, bsdel, ...)
 SHOW SYMBOLS     the loaded symbols (SHOW SYMBOLS SIO* filters); load them with SYMBOLS
+SHOW CLOCK       emulated time: cycles since POWER, and what they are in seconds
 SHOW ROMS        the ROM images built into this binary, and where each came from
 SHOW VERSION     which build this is, and the commit it was built from
 ```
