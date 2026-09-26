@@ -181,6 +181,50 @@ bool loadAltair680(Machine& m) {
     return true;
 }
 
+// Wait until the worker either IS or IS NOT dispatched on a request, by asking the one
+// tool that answers out of band: `status`, handled on the reader thread (#490).
+//
+// THIS IS WHAT REPLACES "sleep 200ms and assume the call under test is under way." A ^C or
+// a `notifications/cancelled` is only honoured once the worker has dequeued the call it
+// targets: runMcp calls Debugger::clearInterrupt() as it publishes each request id, so a
+// signal landing a moment too early is wiped by the very dispatch that was about to run it,
+// and the call goes on to serve its whole budget and answer `timeout`. A fixed sleep is a
+// guess that the dequeue already happened -- the guess this file warns against two comments
+// down, made anyway because there is no reply to wait for. On a loaded Windows CI runner it
+// lost: PR #506's first leg, trial 4 of 6.
+//
+// `in_flight` is set under the same lock as clearInterrupt() and on the very next line, so
+// observing it TRUE is proof the clear is already behind us -- a signal raised from here on
+// is seen by the `Debugger::interrupted()` check at the top of the run loop and cannot be
+// swallowed. Waiting for FALSE first is what makes the TRUE mean anything: it pins the
+// worker as idle before the call under test is fed, so the TRUE that follows can only be
+// that call and not the tail of the setup.
+//
+// Probing cannot perturb what it measures. `status` is answered by the reader without ever
+// entering `pending`, so it neither queues nor reorders; it deliberately never becomes
+// `currentId`, so it cannot swallow a cancel meant for another id. Probe ids come from
+// their own high range, well clear of the sequential ids each test indexes its replies by.
+int g_probeId = 8000;
+
+bool waitForWorker(FeedBuf& feedBuf, SinkBuf& sinkBuf, bool wantBusy, int ms = 30000) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+    do {
+        const int          pid = ++g_probeId;
+        std::ostringstream line;
+        line << R"({"jsonrpc":"2.0","id":)" << pid
+             << R"(,"method":"tools/call","params":{"name":"status","arguments":{}}})"
+             << "\n";
+        feedBuf.feed(line.str());
+
+        std::map<int, Json> rep;
+        if (waitFor([&] { rep = repliesById(sinkBuf.text()); return rep.count(pid) != 0; },
+                    5000) &&
+            rep[pid].at("result").at("structuredContent").at("in_flight").boolean() == wantBusy)
+            return true;
+    } while (std::chrono::steady_clock::now() < deadline);
+    return false;
+}
+
 // Drive a LIVE runMcp and interrupt the one call that is meant to be interrupted.
 //
 // The hard part is not the signal, it is knowing when to send it. A ^C that lands before
@@ -189,8 +233,10 @@ bool loadAltair680(Machine& m) {
 // "the setup is surely done by now" and sleeps is measuring the runner's mood, not the
 // server: the guest boot in `setup` takes as long as it takes, and on a loaded Windows
 // runner that was longer than the guess. So: feed `setup`, WAIT for its last reply to
-// land, and only then feed the call under test. What is left to guess -- one line read
-// and a mutex, microseconds -- the 200ms below covers a thousand times over.
+// land, and only then feed the call under test. The dequeue of that call was left to a
+// 200ms sleep on the grounds that one line read and a mutex is microseconds -- true, and
+// still not a guarantee: a loaded Windows runner lost that race (PR #506). waitForWorker()
+// above replaces it with the answer from the server itself.
 //
 // `after` is fed once the interrupt has been answered (the stale-flag checks). The raise
 // happens on this thread, between two feeds, so it can never escape runMcp's SigintGuard
@@ -223,10 +269,17 @@ SigintRun runWithSigint(Machine& m, const std::vector<std::string>& setup,
 
     for (const auto& call : setup) feed(call);
     CHECK(answered(id), "the setup calls answered before the call under test was sent");
+    CHECK(waitForWorker(feedBuf, sinkBuf, false),
+          "the worker is idle again before the call under test is fed");
 
-    const auto t0    = std::chrono::steady_clock::now();
-    const int  runId = feed(underTest);
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));  // it is under way by now
+    const int runId = feed(underTest);
+    CHECK(waitForWorker(feedBuf, sinkBuf, true),
+          "the call under test is DISPATCHED -- so clearInterrupt() is behind us -- before "
+          "the signal is raised");
+    // Start the clock at DISPATCH, not at the feed: `timeout_ms` is counted from the moment
+    // the worker enters the call, so that is the window "well inside the budget" is about.
+    // Timing from the feed would charge the queue wait to the interrupt.
+    const auto t0 = std::chrono::steady_clock::now();
     std::raise(SIGINT);
     CHECK(answered(runId), "the interrupted run answered");
     SigintRun r;
@@ -860,7 +913,13 @@ void test_mcp() {
         CHECK(waitFor([&] { return repliesById(sinkBuf.text()).count(2) != 0; }, 30000),
               "the setup calls answered before the run to be cancelled was sent");
 
+        CHECK(waitForWorker(feedBuf, sinkBuf, false),
+              "the worker is idle again before the run to be cancelled is fed");
         req(R"({"name":"run","arguments":{"timeout_ms":4000}})");  // id 3 -- will be cancelled
+        // A cancel is matched against `currentId`, so id 3 must BE the in-flight request
+        // before it is sent -- not merely fed. Waiting on that is the difference between
+        // testing the cancel and testing how promptly the runner scheduled a thread.
+        CHECK(waitForWorker(feedBuf, sinkBuf, true), "id 3 is the in-flight request");
 
         // Queued immediately behind the still-running id 3 -- proves the reader thread is not
         // blocked by a busy worker, regardless of when the worker actually gets to them.
@@ -868,17 +927,22 @@ void test_mcp() {
         req(R"({"name":"recv","arguments":{}})");  // id 5
 
         const auto t0 = std::chrono::steady_clock::now();
-        std::this_thread::sleep_for(std::chrono::milliseconds(200));  // id 3 is under way by now
         feedBuf.feed(R"({"jsonrpc":"2.0","method":"notifications/cancelled",)"
                      R"("params":{"requestId":3}})"
                      "\n");
 
-        req(R"({"name":"run","arguments":{"timeout_ms":500}})");  // id 6 -- stale-flag check
-        feedBuf.close();
-        worker.join();
+        // Stop the clock when id 3 ANSWERS. Measuring past here would bill the cancel for
+        // id 6's own 500ms budget and the join, which have nothing to do with how promptly
+        // the cancel landed.
+        CHECK(waitFor([&] { return repliesById(sinkBuf.text()).count(3) != 0; }, 30000),
+              "the cancelled run answered");
         const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                                     std::chrono::steady_clock::now() - t0)
                                     .count();
+
+        req(R"({"name":"run","arguments":{"timeout_ms":500}})");  // id 6 -- stale-flag check
+        feedBuf.close();
+        worker.join();
 
         std::map<int, Json> rep = repliesById(sinkBuf.text());
 
@@ -911,7 +975,10 @@ void test_mcp() {
 
         FeedBuf      feedBuf;
         std::istream feedIn(&feedBuf);
-        std::ostringstream out;
+        // SinkBuf, not an ostringstream: waitForWorker() reads this WHILE the server is
+        // writing it, and that is a data race on a bare stringstream.
+        SinkBuf      sinkBuf;
+        std::ostream out(&sinkBuf);
 
         std::thread worker([&] { runMcp(m, feedIn, out, ""); });
 
@@ -926,13 +993,25 @@ void test_mcp() {
         req(R"({"name":"status","arguments":{}})");  // id 1 -- before anything has run
         req(R"({"name":"run","arguments":{"from":65496,"until":".","timeout_ms":4000}})");
         req(R"({"name":"monitor","arguments":{"command":"SET cpu0 idle=off"}})");
+
+        // The setup has to FINISH before id 4 is fed. The boot (id 2) and the SET (id 3) are
+        // calls too, so while they run `in_flight` is already true -- wait for "busy" with them
+        // still queued and it is the boot that answers, not the run this section is about.
+        CHECK(waitFor([&] { return repliesById(sinkBuf.text()).count(3) != 0; }, 30000),
+              "the setup calls answered before the long run was fed");
+        CHECK(waitForWorker(feedBuf, sinkBuf, false), "the worker is idle before id 4 is fed");
+
         // id 4: flat out, no `until`, idle disabled -- runs its full 1500ms budget, giving a
         // wide window (two 300ms-spaced polls below, with 900ms of margin left over) to poll
         // `status` while it is genuinely still executing. 1500ms proves the same thing as a
         // longer budget without adding several seconds to every run of this suite.
         req(R"({"name":"run","arguments":{"timeout_ms":1500}})");
 
-        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        // Poll only once id 4 is genuinely the in-flight call. The 300ms BETWEEN the two
+        // polls is real and deliberate -- `steps`/`generation` have to be given time to
+        // advance -- but "id 4 has started" is a fact to read off the server, not to sleep
+        // for (waitForWorker, above).
+        CHECK(waitForWorker(feedBuf, sinkBuf, true), "id 4 is the in-flight call before it is polled");
         req(R"({"name":"status","arguments":{}})");  // id 5 -- id 4 is still running
         std::this_thread::sleep_for(std::chrono::milliseconds(300));
         req(R"({"name":"status","arguments":{}})");  // id 6 -- later still, id 4 still running
@@ -942,7 +1021,7 @@ void test_mcp() {
 
         std::map<int, Json> rep;
         std::vector<int>    order;  // the order replies were WRITTEN, not the order requested
-        std::istringstream  lines(out.str());
+        std::istringstream  lines(sinkBuf.text());
         std::string         line;
         while (std::getline(lines, line)) {
             if (line.empty()) continue;
@@ -995,7 +1074,10 @@ void test_mcp() {
 
         FeedBuf      feedBuf;
         std::istream feedIn(&feedBuf);
-        std::ostringstream out;
+        // SinkBuf, not an ostringstream: waitForWorker() reads this WHILE the server is
+        // writing it, and that is a data race on a bare stringstream.
+        SinkBuf      sinkBuf;
+        std::ostream out(&sinkBuf);
 
         std::thread worker([&] { runMcp(m, feedIn, out, ""); });
 
@@ -1010,7 +1092,8 @@ void test_mcp() {
         req(R"({"name":"status","arguments":{}})");  // id 1 -- nothing running yet
         // id 2: ~10M single steps through the debugger, roughly a second of worker time.
         req(R"({"name":"monitor","arguments":{"command":"STEP 10000000"}})");
-        std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        CHECK(waitForWorker(feedBuf, sinkBuf, true),
+              "id 2 is the in-flight call -- read off the server, not slept for");
         req(R"({"name":"status","arguments":{}})");  // id 3 -- id 2 is still stepping
 
         feedBuf.close();
@@ -1018,7 +1101,7 @@ void test_mcp() {
 
         std::map<int, Json> rep;
         std::vector<int>    order;
-        std::istringstream  lines(out.str());
+        std::istringstream  lines(sinkBuf.text());
         std::string         line;
         while (std::getline(lines, line)) {
             if (line.empty()) continue;
