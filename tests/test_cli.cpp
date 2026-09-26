@@ -2686,6 +2686,58 @@ void test_achieved_hz() {
         run("SET CONSOLE DEBUG=stderr");
     }
 
+    // -----------------------------------------------------------------
+    // SHOW CLOCK -- emulated time (altairsim issue #492). The machine has always counted
+    // cycles; before this nothing printed them, so "how long has the guest run,
+    // in its own seconds" could only be estimated from an instruction count.
+    // -----------------------------------------------------------------
+    SECTION("SHOW CLOCK reports emulated time, derived from the crystal");
+    {
+        Machine cm;
+        Monitor cmon(cm);
+        std::ostringstream setup;
+        cmon.exec("BOARDS ADD 6800 cpu0", setup);
+        cmon.exec("BOARDS ADD memory mem0", setup);
+        cmon.exec("REGION ADD mem0 type=ram at=0 size=1K", setup);  // RAM for the NOPs
+        auto run = [&](const std::string& l) {
+            std::ostringstream o;
+            cmon.exec(l, o);
+            return o.str();
+        };
+        const auto npos = std::string::npos;
+
+        CHECK(run("SHOW CLOCK").find("0.000000 s") != npos,
+              "a machine that has not run reports zero elapsed");
+
+        // A 6800 NOP (01) is 2 cycles, so ten of them is exactly 20 -- and at the default
+        // 2 MHz crystal, 20 cycles is 10 microseconds. Both numbers are checked because the
+        // pair is the point: a count that cannot be converted is what #492 had.
+        cmon.exec("FILL 0-9 01", setup);   // ten NOPs at 0000
+        cmon.exec("SET REG PC=0", setup);
+        cmon.exec("STEP 10", setup);
+        const std::string after = run("SHOW CLOCK");
+        CHECK(after.find("(20 cycles)") != npos, "ten NOPs are 20 cycles");
+        CHECK(after.find("0.000010 s") != npos, "and 20 cycles at 2 MHz is 10 microseconds");
+        CHECK(after.find("2000000 Hz") != npos, "the crystal it divided by is named");
+
+        // The seconds follow the CRYSTAL, not the host: same cycles, a different divisor,
+        // a different answer. This is what keeps the figure true under replay.
+        cmon.exec("SET cpu0 clock_hz=4000000", setup);
+        CHECK(run("SHOW CLOCK").find("0.000005 s") != npos,
+              "doubling the crystal halves the elapsed seconds for the same cycles");
+
+        // Pacing is a separate axis from the divisor: clock_hz=0 runs flat out but STILL
+        // divides by a real rate, so the guest's seconds stay defined (clock.h: hz() is a
+        // divisor and is never 0, free() is the policy).
+        cmon.exec("SET cpu0 clock_hz=0", setup);
+        const std::string flat = run("SHOW CLOCK");
+        CHECK(flat.find("free") != npos, "clock_hz=0 reads as free-running");
+        CHECK(flat.find("(20 cycles)") != npos, "and the cycle count is unaffected by pacing");
+
+        CHECK(run("SHOW TIME").find("clock  (emulated time") != npos, "SHOW TIME is the same command");
+        CHECK(run("SHOW CLO").find("clock  (emulated time") != npos, "and it resolves by prefix");
+    }
+
     // The RUN banner names WHERE the console is (issue #244 follow-up). A machine whose
     // console lives on a `terminal:`/`socket:` line still HAS a console -- it just is not
     // the stdio one, so the old banner libelled it as "(no console connected)". We drive a

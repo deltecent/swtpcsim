@@ -1214,6 +1214,7 @@ Json callTool(Machine& m, McpSession& sess, const std::string& name, const Json&
         const auto deadline = start + std::chrono::milliseconds(timeout);
         std::string     out;
         uint64_t        steps = 0;
+        uint64_t        cycles = 0;        // emulated time this call spent -- see below
         int             quietSlices = 0;         // consecutive quiet slices -- the instruction-count rule
         clk::time_point idleSince{};             // when this unbroken run of quiet began; unset = busy
         std::string     stopped;
@@ -1256,6 +1257,7 @@ Json callTool(Machine& m, McpSession& sess, const std::string& name, const Json&
             m.pump();
             steps += r.steps;
             publishStatus(steps);  // #490: this slice's boundary, for `status` to read
+            cycles += r.cycles;
 
             // Keep wall-clock in step with the crystal (see the baseline above). Only when a
             // clock_hz was asked for; free() is the flat-out default and never sleeps here.
@@ -1319,6 +1321,12 @@ Json callTool(Machine& m, McpSession& sess, const std::string& name, const Json&
         d["stopped"] = Json(stopped);
         d["pc"]      = Json((long long)cpu->pc());
         d["steps"]   = Json((long long)steps);
+        // EMULATED TIME THIS CALL SPENT, which `steps` cannot give you: 6800 instructions
+        // are 2-12 cycles apiece, so a count of them is not a duration. `step` has always
+        // reported cycles for its own call; run not doing so was an oversight. Seconds are
+        // cycles divided by the crystal -- `monitor {command: "SHOW CLOCK"}` prints that,
+        // plus the total since power-on.
+        d["cycles"] = Json((long long)cycles);
         std::string text = out;
         if (stopped == "unclaimed") {
             // The monitor's stop line, so the text says WHICH address; the warning with the PC
