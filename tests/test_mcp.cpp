@@ -11,6 +11,7 @@
 #include "platform/socket.h"
 #include "util/json.h"
 
+#include <atomic>
 #include <chrono>
 #include <filesystem>
 #include <map>
@@ -455,6 +456,105 @@ void test_mcp() {
               "at the prompt, idle=on -> run hands back with stopped=idle");
         CHECK(rep[4].at("result").at("structuredContent").at("stopped").str() == "timeout",
               "idle=off -> the same prompt spin runs the whole budget (no early idle-stop)");
+    }
+
+    SECTION("MCP: a live device on a line defers the idle-stop by a wall-clock grace");
+    {
+        // Same MON680 prompt spin -- but with a real wire connected (loopback on a 680uio's
+        // serial channel, fitted for the purpose), "quiet" might just be the guest between a request and a reply that
+        // lands hundreds of ms later. So the idle-stop is not taken until the wire has been
+        // silent for a wall-clock grace (seconds), far longer than this run's 500 ms budget --
+        // where the no-device run above stopped=idle almost at once, this one runs the budget
+        // out. This grace is what stops a request/reply gap or a between-blocks pause on a real
+        // device from being mistaken for a finished prompt (#424); it is measured in WALL time,
+        // so it holds at any clock_hz. It is scoped to idle-stop ONLY -- since #487, it does NOT
+        // extend timeout_ms itself; see the next section for that boundary.
+        Machine m;
+        if (!loadAltair680(m)) return;
+        std::ostringstream s;
+        int id = 0;
+        auto req = [&](const std::string& params) {
+            s << R"({"jsonrpc":"2.0","id":)" << ++id
+              << R"(,"method":"tools/call","params":)" << params << "}\n";
+        };
+        req(R"({"name":"monitor","arguments":{"command":"BOARDS ADD 680uio uio0"}})");
+        req(R"({"name":"connect","arguments":{"id":"uio0","unit":"serial","endpoint":"loopback"}})");
+        req(R"({"name":"run","arguments":{"from":65496,"until":".","timeout_ms":4000}})");
+        req(R"({"name":"run","arguments":{"timeout_ms":500}})");  // at the prompt, device on line
+        auto rep = runScript(m, s.str());
+
+        CHECK(rep[4].at("result").at("structuredContent").at("stopped").str() == "timeout",
+              "with a device on a line the prompt spin is not called idle within the budget");
+    }
+
+    SECTION("MCP: timeout_ms is a strict wall-clock ceiling even while a live wire keeps "
+            "talking (#487)");
+    {
+        // #487: a version of this loop let a live wire's traffic renew the DEADLINE itself, not
+        // just defer idle-stop (the section above) -- so a peer that said anything at all,
+        // however slowly, kept `run` going past its budget indefinitely, bounded only by a
+        // 10-minute absolute cap. A real TCP peer here writes one byte every 150 ms for 1.5 s
+        // straight -- comfortably inside the 5 s grace idle-stop still uses -- against a 400 ms
+        // budget. Pre-fix this call would not have returned until ~5 s after the writer's last
+        // byte (~6.5 s total); fixed, it must return at ~400 ms regardless of the traffic.
+        Machine m;
+        if (!loadAltair680(m)) return;
+        std::string err;
+
+        uint16_t port = freePort();
+        CHECK(port != 0, "the OS hands us a free port");
+
+        std::ostringstream s;
+        int id = 0;
+        auto req = [&](const std::string& params) {
+            s << R"({"jsonrpc":"2.0","id":)" << ++id
+              << R"(,"method":"tools/call","params":)" << params << "}\n";
+        };
+        req(R"({"name":"monitor","arguments":{"command":"BOARDS ADD 680uio uio0"}})");
+        req(R"({"name":"connect","arguments":{"id":"uio0","unit":"serial","endpoint":"socket:)" +
+            std::to_string(port) + R"("}})");
+        req(R"({"name":"run","arguments":{"from":65496,"until":".","timeout_ms":4000}})");
+        req(R"({"name":"run","arguments":{"timeout_ms":400}})");  // the call under test
+
+        // The peer connects AFTER the "connect" request above binds the listener, which happens
+        // mid-script inside the runScript() call below -- so it races that bind and retries.
+        std::atomic<bool> stopFeed{false};
+        std::thread feeder([&] {
+            std::string ferr;
+            std::unique_ptr<platform::TcpConn> client;
+            for (int i = 0; i < 400 && !client && !stopFeed; ++i) {
+                client = platform::connectTcp("127.0.0.1", port, ferr);
+                if (!client) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+            if (!client) return;
+            for (int i = 0; i < 200 && !client->established() && !stopFeed; ++i) {
+                client->poll();
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+            const uint8_t byte = 'X';
+            for (int i = 0; i < 10 && !stopFeed; ++i) {
+                client->poll();
+                client->write(&byte, 1);
+                std::this_thread::sleep_for(std::chrono::milliseconds(150));
+            }
+        });
+
+        const auto t0  = std::chrono::steady_clock::now();
+        auto       rep = runScript(m, s.str());
+        const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::steady_clock::now() - t0)
+                                    .count();
+        stopFeed = true;
+        feeder.join();
+
+        CHECK(rep[4].at("result").at("structuredContent").at("stopped").str() == "timeout",
+              "the budget run stops on timeout_ms, not idle or anything else");
+        CHECK(elapsedMs < 1200,
+              ("timeout_ms:400 held under continuous live-wire traffic (took " +
+               std::to_string(elapsedMs) +
+               "ms; the pre-#487 grace would have run past 1500ms of writes plus a further "
+               "5s of post-traffic silence)")
+                  .c_str());
     }
 
     SECTION("MCP: mem_fill, mem_search and mem_save round-trip through the bus");

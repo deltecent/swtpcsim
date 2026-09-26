@@ -989,10 +989,15 @@ Json callTool(Machine& m, McpSession& sess, const std::string& name, const Json&
         const auto      start  = clk::now();
 
         // IS A REAL DEVICE ON A LINE? -- a serial cable, a socket, anything but the MCP console
-        // and an empty jack. It changes what "the guest is doing nothing" means: on such a wire,
-        // silence is usually the guest waiting on a reply that arrives hundreds of ms later, or
-        // the gap between two blocks of a disk read, and a byte can land at any moment in WALL
-        // time no matter how the CPU is clocked (#424).
+        // and an empty jack. This governs ONLY the idle-stop grace below (`idleDwell`): on such a
+        // wire, a quiet slice does not mean the guest reached a prompt -- it may be waiting on a
+        // reply that lands hundreds of ms later, or sitting in the gap between two blocks of a
+        // disk read (#424). It does NOT extend timeout_ms. An earlier version of this loop also
+        // let live-wire traffic renew the deadline itself, so a peer that said anything at all,
+        // however slowly, kept the call going indefinitely (#487) -- timeout_ms is now a hard
+        // wall-clock ceiling no matter what is arriving on any line. A transfer that needs longer
+        // gets a bigger timeout_ms and a caller that loops on stopped:"timeout", not an unbounded
+        // wait built into the tool.
         bool hasLiveWire = false;
         for (const auto& b : m.boards())
             for (const auto& u : b->units()) {
@@ -1002,20 +1007,17 @@ Json callTool(Machine& m, McpSession& sess, const std::string& name, const Json&
                 hasLiveWire = true;
             }
 
-        // The wall-clock grace a live wire buys: idle is not declared, and an active transfer is
-        // not cut off at the budget, until the wire has been silent this long. Zero with no
-        // device -- there the instruction-count rule alone decides idle, exactly as before, so we
-        // still "idle on instruction count" for a plain interactive prompt.
+        // The wall-clock grace the idle-stop (below) waits out before it will call a live wire's
+        // silence "idle". Zero with no device -- there the instruction-count rule alone decides,
+        // exactly as before, so a plain interactive prompt still "idles on instruction count".
         const auto idleDwell = hasLiveWire ? std::chrono::milliseconds(5000)
                                            : std::chrono::milliseconds(0);
 
-        const auto deadline     = start + std::chrono::milliseconds(timeout);
-        const auto hardDeadline = start + std::chrono::milliseconds(600000);  // absolute 10-min cap
+        const auto deadline = start + std::chrono::milliseconds(timeout);
         std::string     out;
         uint64_t        steps = 0;
         int             quietSlices = 0;         // consecutive quiet slices -- the instruction-count rule
         clk::time_point idleSince{};             // when this unbroken run of quiet began; unset = busy
-        clk::time_point lastRxAt{};              // wall time of the last byte in on any line; unset = none
         std::string     stopped;
 
         auto drain = [&] {
@@ -1026,16 +1028,7 @@ Json callTool(Machine& m, McpSession& sess, const std::string& name, const Json&
         for (;;) {
             drain();
             if (!until.empty() && out.find(until) != std::string::npos) { stopped = "match"; break; }
-            if (clk::now() >= deadline) {
-                // The budget is up -- but do not cut off a transfer that is still streaming. On a
-                // live wire, a byte received within idleDwell means the guest is mid-transaction
-                // (a boot loader pulling 512-byte blocks over a 38.4k serial line runs many
-                // seconds), so let it finish and return only once the wire has genuinely gone
-                // quiet. The absolute ceiling still bounds a peer that never stops talking.
-                const bool activeTransfer = hasLiveWire && lastRxAt != clk::time_point{} &&
-                                            clk::now() - lastRxAt < idleDwell;
-                if (!activeTransfer || clk::now() >= hardDeadline) { stopped = "timeout"; break; }
-            }
+            if (clk::now() >= deadline) { stopped = "timeout"; break; }
             if (maxSteps && steps >= maxSteps) { stopped = "steps"; break; }
 
             const uint64_t rxBefore     = m.rxBytes();
@@ -1058,7 +1051,6 @@ Json callTool(Machine& m, McpSession& sess, const std::string& name, const Json&
             const bool produced = out.size() != wroteBefore;
             const bool received = m.rxBytes() != rxBefore;
             const uint64_t hungry = con->hungry() - hungryBefore;
-            if (received) lastRxAt = clk::now();  // the wire is live -- keep the transfer going
 
             if (r.why == StopReason::Halted)     { stopped = "halt";       break; }
             if (r.why == StopReason::Breakpoint) { stopped = "breakpoint"; break; }

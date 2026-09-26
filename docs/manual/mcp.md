@@ -55,10 +55,15 @@ tool, which under a pipe waits on a stdin that is the JSON-RPC channel itself.
 By default the guest runs flat out, which is what you want for booting and for driving a
 prompt. But when a real device is on a serial line and you have set a clock speed with `SET
 cpu0 clock_hz=…`, `run` paces the guest to that clock, so a reply the device sends a fraction
-of a second later lands while the guest is still waiting for it. And with such a device on the
-line `run` will not cut a transfer off when `timeout_ms` runs out: as long as bytes are still
-arriving off the wire it keeps going, and returns only once the line has genuinely gone quiet.
-So a boot loader that reads its whole system image in over a serial disk finishes in one call.
+of a second later lands while the guest is still waiting for it.
+
+`timeout_ms` is a hard wall-clock ceiling, full stop — traffic on a live wire does not extend
+it. A boot loader that reads its whole system image in over a serial disk is not cut off
+mid-block; it is bounded the same way any other call is: give it a `timeout_ms` as long as the
+worst case takes (up to 600000 ms), and let it return early on `until` or a prompt the moment it
+finishes, exactly as a fast call does. A call that hits `timeout_ms` mid-transfer returns
+`stopped: "timeout"` with whatever it has read so far — a normal result to loop `run` on, not a
+failure, and `regs`/`mem_dump` can confirm a destination pointer is still climbing while you do.
 
 Under `--mcp` the console line is quietly re-seated onto an in-memory terminal the server
 owns (there is no host keyboard behind a pipe), which is what `send`/`run`/`recv` read and

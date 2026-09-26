@@ -470,11 +470,12 @@ other swtpcsim) that has it, or the attach fails busy. swtpcsim already flushes 
 (`tcflush`), so an external flush is redundant — and worse, opening the port from pyserial toggles
 DTR/RTS, which can knock a device out of its current mode. Let the sim own the port.
 
-**A live transfer holds `run` open.** During a streaming read `run` gets a wall-clock grace
-window: it keeps going while bytes are still crossing and returns only when the wire quiets or
-`until` matches — it will **not** cut a transfer at `timeout_ms`. (On older builds a long read
-could return `stopped: "idle"` mid-transfer; if you see that, resume with `run` and no new `from`
-and watch a destination pointer climb via `regs`/`mem_dump` until it completes.)
+**`timeout_ms` bounds a live transfer too.** Traffic on a real device does not extend the budget.
+Give a streaming read a `timeout_ms` as long as its worst case (up to
+600000 ms) and let `until` end the call early, same as any other command; a call that hits
+`timeout_ms` mid-transfer returns `stopped: "timeout"` with what it read so far, which is a normal
+result to resume `run` (no new `from`) on, not a failure. Watch a destination pointer climb via
+`regs`/`mem_dump` if you want to confirm it is still making progress rather than stuck.
 
 ## Toward a real machine
 
