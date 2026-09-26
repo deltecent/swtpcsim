@@ -18,9 +18,12 @@
 #include "util/json.h"
 
 #include <chrono>
+#include <condition_variable>
+#include <deque>
 #include <fstream>
 #include <iostream>
 #include <istream>
+#include <mutex>
 #include <ostream>
 #include <sstream>
 #include <thread>
@@ -1539,6 +1542,16 @@ void replyError(std::ostream& out, const Json& id, int code, const std::string& 
     out << r.dump() << "\n" << std::flush;
 }
 
+// One line off the wire, already parsed (or not). Queued so the WORKER thread -- the only
+// one that ever touches the Machine or writes to `out` -- drains it in order, while the
+// READER thread (runMcp) keeps consuming stdin even during a long `run`. A parse failure
+// is queued too rather than answered on the spot: `out` has exactly one writer, ever.
+struct QueuedMsg {
+    bool        parseOk = true;
+    std::string parseErr;
+    Json        req;
+};
+
 } // namespace
 
 int runMcp(Machine& m, std::istream& in, std::ostream& out, const std::string& mirror) {
@@ -1558,25 +1571,73 @@ int runMcp(Machine& m, std::istream& in, std::ostream& out, const std::string& m
     if (!mirror.empty() && !bindErr.empty())
         std::cerr << "swtpcsim: --mirror " << mirror << " failed: " << bindErr << "\n";
 
-    // ^C AS AN OUT-OF-BAND STOP for a wedged `run` (#488): this server's stdin IS the
-    // JSON-RPC channel, so there is no spare keyboard byte for ATTN the way an
-    // interactive session has one, and the server does not (yet) read stdin at all
-    // while a tool call is in flight -- see SigintGuard (core/debug.h) for why this is
-    // the same fix as a piped monitor RUN's ^C. Installed for the whole session, not
-    // just one call, and restored on return so nothing outlives this function.
+    // ^C AS AN OUT-OF-BAND STOP for a wedged `run` (#488, part 1): belt-and-braces for an
+    // external `kill -INT` on the whole process. Installed for the whole session, restored
+    // on return so nothing outlives this function.
     SigintGuard sigintGuard;
 
-    std::string line;
-    while (std::getline(in, line)) {
-        if (line.empty()) continue;
-        Json req;
-        std::string err;
-        if (!Json::parse(line, req, err)) {
-            replyError(out, Json(), -32700, "parse error: " + err);
+    // THE READER/WORKER SPLIT (#488, part 2): a single getline-then-dispatch loop cannot
+    // see a `notifications/cancelled` that arrives while it is blocked inside a long
+    // `run` -- it is not reading stdin again until that call returns. So a separate
+    // thread does nothing but read and parse lines, forever, and hands them to the loop
+    // below over a queue -- except `notifications/cancelled`, which it acts on
+    // immediately against the in-flight request's id instead of queuing, since queuing it
+    // would defeat the entire point: it would just wait behind the very call it is meant
+    // to interrupt. The reader thread touches stdin, `pending`, `eof`, `currentId` and
+    // `haveCurrentId` ONLY -- never the Machine, never `out` -- so a tool call's existing
+    // single-threaded access to either needs no change at all.
+    std::mutex              mu;
+    std::condition_variable cv;
+    std::deque<QueuedMsg>   pending;
+    bool                    eof = false;
+    Json                    currentId;               // the request the worker is running now
+    bool                    haveCurrentId = false;    // false: nothing in flight to cancel
+
+    std::thread reader([&] {
+        std::string rline;
+        while (std::getline(in, rline)) {
+            if (rline.empty()) continue;
+            QueuedMsg qm;
+            qm.parseOk = Json::parse(rline, qm.req, qm.parseErr);
+            if (qm.parseOk && qm.req.at("method").str() == "notifications/cancelled") {
+                std::lock_guard<std::mutex> lk(mu);
+                const Json& target = qm.req.at("params").at("requestId");
+                if (haveCurrentId && !target.isNull() && target.dump() == currentId.dump())
+                    Debugger::interrupt();
+                continue;  // acted on immediately -- never queued, never replied to
+            }
+            std::lock_guard<std::mutex> lk(mu);
+            pending.push_back(std::move(qm));
+            cv.notify_one();
+        }
+        std::lock_guard<std::mutex> lk(mu);
+        eof = true;
+        cv.notify_one();
+    });
+
+    for (;;) {
+        QueuedMsg qm;
+        {
+            std::unique_lock<std::mutex> lk(mu);
+            cv.wait(lk, [&] { return !pending.empty() || eof; });
+            if (pending.empty() && eof) break;
+            qm = std::move(pending.front());
+            pending.pop_front();
+        }
+
+        if (!qm.parseOk) {
+            replyError(out, Json(), -32700, "parse error: " + qm.parseErr);
             continue;
         }
+        const Json& req    = qm.req;
         std::string method = req.at("method").str();
-        Json id = req.at("id");
+        Json        id     = req.at("id");
+
+        {
+            std::lock_guard<std::mutex> lk(mu);
+            currentId     = id;
+            haveCurrentId = true;
+        }
 
         if (method == "initialize") {
             Json r = Json::obj();
@@ -1592,28 +1653,28 @@ int runMcp(Machine& m, std::istream& in, std::ostream& out, const std::string& m
             info["version"] = Json(versionNumber());
             r["serverInfo"] = info;
             reply(out, id, r);
-            continue;
-        }
-        if (method == "notifications/initialized") continue;
-
-        if (method == "tools/list") {
+        } else if (method == "notifications/initialized") {
+            // no reply -- a notification, not a request
+        } else if (method == "tools/list") {
             Json r = Json::obj();
             r["tools"] = toolList();
             reply(out, id, r);
-            continue;
-        }
-        if (method == "tools/call") {
+        } else if (method == "tools/call") {
             const Json& params = req.at("params");
             std::string name = params.at("name").str();
             reply(out, id, callTool(m, sess, name, params.at("arguments")));
-            continue;
-        }
-        if (method == "ping") {
+        } else if (method == "ping") {
             reply(out, id, Json::obj());
-            continue;
+        } else {
+            replyError(out, id, -32601, "method not found: " + method);
         }
-        replyError(out, id, -32601, "method not found: " + method);
+
+        {
+            std::lock_guard<std::mutex> lk(mu);
+            haveCurrentId = false;  // done -- a cancel for this id from here on matches nothing
+        }
     }
+    reader.join();
     return 0;
 }
 

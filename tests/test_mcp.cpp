@@ -14,10 +14,15 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <csignal>
+#include <deque>
 #include <filesystem>
+#include <istream>
 #include <map>
+#include <mutex>
 #include <sstream>
+#include <streambuf>
 #include <string>
 #include <thread>
 
@@ -27,6 +32,46 @@ using namespace swtpc;
 // replies back -- the same door an assistant uses, over a pair of stringstreams
 // instead of a pipe. No mocks: a real built-in machine, a real 6800, a real 6850.
 namespace {
+
+// A tiny thread-safe "pipe": feed() appends bytes from any thread (real time, real
+// gaps), close() marks EOF once everything fed has been drained. A static
+// std::istringstream makes every line available to runMcp's reader thread at once,
+// which is fine for an ordinary script but wrong for testing #488's
+// notifications/cancelled -- the reader would race straight through a cancellation
+// line before the targeted `run` even starts executing, since nothing paces it
+// against real time the way a live client's stdin does. FeedBuf lets a test control
+// exactly when each line becomes visible, the same way a real client's writes do.
+class FeedBuf : public std::streambuf {
+public:
+    void feed(const std::string& s) {
+        std::lock_guard<std::mutex> lk(mu_);
+        for (char c : s) q_.push_back(c);
+        cv_.notify_all();
+    }
+    void close() {
+        std::lock_guard<std::mutex> lk(mu_);
+        closed_ = true;
+        cv_.notify_all();
+    }
+
+protected:
+    int_type underflow() override {
+        std::unique_lock<std::mutex> lk(mu_);
+        cv_.wait(lk, [&] { return !q_.empty() || closed_; });
+        if (q_.empty()) return traits_type::eof();
+        ch_ = q_.front();
+        q_.pop_front();
+        setg(&ch_, &ch_, &ch_ + 1);
+        return traits_type::to_int_type(ch_);
+    }
+
+private:
+    std::mutex              mu_;
+    std::condition_variable cv_;
+    std::deque<char>        q_;
+    bool                    closed_ = false;
+    char                    ch_ = 0;
+};
 
 std::map<int, Json> runScript(Machine& m, const std::string& script,
                               const std::string& mirror = "") {
@@ -693,6 +738,85 @@ void test_mcp() {
                   ("a paced run stops on the SIGINT every time, not just when it happens to "
                    "land inside a slice (trial " + std::to_string(trial) + ")").c_str());
         }
+    }
+
+    SECTION("MCP: notifications/cancelled interrupts the matching in-flight run, and other "
+            "requests queue behind it correctly (#488)");
+    {
+        // #488, part 2: with a static istringstream (runScript's usual approach) every line
+        // is available to the reader thread at once, so a cancellation would race straight
+        // past the `run` it targets before that call even starts -- nothing paces it against
+        // real time the way a live client's stdin does. FeedBuf (above) fixes that: this test
+        // controls exactly when each line becomes visible, matching how a real client would
+        // actually drive this (send the call, then LATER send the cancellation once something
+        // -- a user hitting Ctrl-C in their own tool -- decides to cancel it).
+        //
+        // Also proves the other half of the reader/worker split in the same flow: `regs` and
+        // `recv`, fed WHILE the long run is still executing, must queue and still be answered
+        // correctly once the worker frees up -- a busy worker must never block the reader from
+        // accepting more requests, only from EXECUTING them out of order.
+        Machine m;
+        if (!loadAltair680(m)) return;
+
+        FeedBuf      feedBuf;
+        std::istream feedIn(&feedBuf);
+        std::ostringstream out;
+
+        std::thread worker([&] { runMcp(m, feedIn, out, ""); });
+
+        int  id  = 0;
+        auto req = [&](const std::string& params) {
+            std::ostringstream line;
+            line << R"({"jsonrpc":"2.0","id":)" << ++id
+                 << R"(,"method":"tools/call","params":)" << params << "}\n";
+            feedBuf.feed(line.str());
+        };
+
+        req(R"({"name":"run","arguments":{"from":65496,"until":".","timeout_ms":4000}})");
+        req(R"({"name":"monitor","arguments":{"command":"SET cpu0 idle=off"}})");
+        req(R"({"name":"run","arguments":{"timeout_ms":4000}})");  // id 3 -- will be cancelled
+
+        // Queued immediately behind the still-running id 3 -- proves the reader thread is not
+        // blocked by a busy worker, regardless of when the worker actually gets to them.
+        req(R"({"name":"regs","arguments":{}})");  // id 4
+        req(R"({"name":"recv","arguments":{}})");  // id 5
+
+        const auto t0 = std::chrono::steady_clock::now();
+        std::this_thread::sleep_for(std::chrono::milliseconds(150));  // let id 3 actually start
+        feedBuf.feed(R"({"jsonrpc":"2.0","method":"notifications/cancelled",)"
+                     R"("params":{"requestId":3}})"
+                     "\n");
+
+        req(R"({"name":"run","arguments":{"timeout_ms":500}})");  // id 6 -- stale-flag check
+        feedBuf.close();
+        worker.join();
+        const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::steady_clock::now() - t0)
+                                    .count();
+
+        std::map<int, Json> rep;
+        std::istringstream  lines(out.str());
+        std::string         line;
+        while (std::getline(lines, line)) {
+            if (line.empty()) continue;
+            Json        j;
+            std::string err;
+            if (Json::parse(line, j, err)) rep[(int)j.at("id").integer()] = j;
+        }
+
+        CHECK(rep[3].at("result").at("structuredContent").at("stopped").str() == "interrupted",
+              "notifications/cancelled for id 3 stops the matching in-flight run");
+        CHECK(elapsedMs < 1500,
+              ("the cancel landed well inside the 4000ms budget (took " +
+               std::to_string(elapsedMs) + "ms)")
+                  .c_str());
+        CHECK(rep[4].at("result").at("structuredContent").has("pc"),
+              "regs, queued behind the busy run, still answers once the worker is free");
+        CHECK(rep[5].at("result").at("structuredContent").has("output"),
+              "recv, queued right behind it, answers too -- in order, not dropped");
+        CHECK(rep[6].at("result").at("structuredContent").at("stopped").str() == "timeout",
+              "id 6 runs its own budget out normally -- the cancel for id 3 does not leak "
+              "into a later, unrelated request");
     }
 
     SECTION("MCP: mem_fill, mem_search and mem_save round-trip through the bus");
