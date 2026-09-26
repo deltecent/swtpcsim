@@ -40,25 +40,80 @@ through MCP:
   (a prompt like `+++`) appears, `from` to set the PC first (booting is `from` the ROM
   monitor's reset entry). It **also stops on its own when the guest reaches a prompt** — spinning on the
   console with nothing to say — so you get control back without guessing a timeout. Every
-  stop says why in `stopped`: `match`, `idle`, `timeout`, `steps`, `halt`, `breakpoint`.
+  stop says why in `stopped`: `match`, `idle`, `timeout`, `steps`, `halt`, `breakpoint`,
+  `unclaimed` (under `SET BUS UNCLAIMED=HALT`), `tape-stop` (a `BREAK TAPE STOP`), or
+  `interrupted` (see below). A `SET BUS UNCLAIMED=WARN` line, or any other bus or board
+  message from the run, comes back in `warnings`. JSON has no hex, so `from` is a decimal
+  number (`65496` for `FFD8`); a string such as `"0xFFD8"` is refused with the number to send.
 - **`send`** — type at the console without running (then `run` to let it be read).
 - **`recv`** — drain what the guest has printed since you last looked, without running.
 - **`regs`** — the CPU registers right now.
+- **`status`** — a guaranteed-non-blocking check: whether the server is currently busy on
+  ANY call (not just `run`), plus the CPU board id and the last `run`'s step count/PC. It
+  never queues behind anything, including a `run` that never ends — see "Stopping a `run`
+  that will not end" below for why that matters and what its fields mean when nothing is
+  running.
 
 The shape of a session is therefore: `run {from: 0xE0D0, until: "$"}` to reach the SWTBUG
 monitor and `run {input: "D", until: "+++"}` to boot FLEX, then `run {input: "CAT\r", until:
-"+++"}` per command, reading the reply each time. A `run`
-**never blocks** — it advances the guest for at most `timeout_ms` (default 2000) and
-returns — so a `tools/call` always comes back, unlike a bare `RUN` through the `monitor`
-tool, which under a pipe waits on a stdin that is the JSON-RPC channel itself.
+"+++"}` per command, reading the reply each time. A `run` **never blocks** — it advances the
+guest for at most `timeout_ms` (default 2000, maximum 600000) and returns — so a `tools/call`
+always comes back, unlike a bare `RUN` through the `monitor` tool, which under a pipe waits on
+a stdin that is the JSON-RPC channel itself.
+
+That budget is a ceiling and not a wait. The call ends as soon as `until` matches or the
+guest reaches a prompt, so asking for more time than the work needs costs nothing: a job that
+takes fifty seconds under a budget of two minutes returns after fifty seconds. Set the budget
+to the longest you are willing to wait, not to what you expect, and let `until` end the call.
+
+What you type goes to the guest byte for byte, control characters included, and every line in
+the machine is 8-bit clean. A control byte is written as a JSON `\uXXXX` escape: `\u0003` is
+^C, `\u001b` is ESC. So `send {text: "\u001b"}` pauses a FLEX listing exactly as the ESC key
+would. Note that `\x03` is **not** JSON — JSON has no `\x` escape — and it arrives at the
+guest as the three ordinary characters `x03` rather than as a control byte.
 
 By default the guest runs flat out, which is what you want for booting and for driving a
 prompt. But when a real device is on a serial line and you have set a clock speed with `SET
 cpu0 clock_hz=…`, `run` paces the guest to that clock, so a reply the device sends a fraction
-of a second later lands while the guest is still waiting for it. And with such a device on the
-line `run` will not cut a transfer off when `timeout_ms` runs out: as long as bytes are still
-arriving off the wire it keeps going, and returns only once the line has genuinely gone quiet.
-So a boot loader that reads its whole system image in over a serial disk finishes in one call.
+of a second later lands while the guest is still waiting for it.
+
+`timeout_ms` is a hard wall-clock ceiling, full stop — traffic on a live wire does not extend
+it. A boot loader that reads its whole system image in over a serial disk is not cut off
+mid-block; it is bounded the same way any other call is: give it a `timeout_ms` as long as the
+worst case takes (up to 600000 ms), and let it return early on `until` or a prompt the moment it
+finishes, exactly as a fast call does. A call that hits `timeout_ms` mid-transfer returns
+`stopped: "timeout"` with whatever it has read so far — a normal result to loop `run` on, not a
+failure, and `regs`/`mem_dump` can confirm a destination pointer is still climbing while you do.
+
+### Stopping a `run` that will not end
+
+A `run` ends by itself at `timeout_ms`, but you may not want to wait that long. There are
+two ways to stop it early, and both make the `run` in progress stop at once and return
+`stopped: "interrupted"` with what the guest printed so far:
+
+- **Cancel the request.** Send the standard MCP `notifications/cancelled` message naming the
+  request id of the `run`. The server keeps reading its input while a `run` is going, so the
+  cancel is seen straight away. A cancel that names some other request, or one that arrives
+  after the `run` has returned, is ignored, and it never carries over to the next call. Other
+  requests sent during a `run` are queued and answered in order once it returns — except
+  `status`, which is the one call that is never queued: poll it to check whether a `run` you
+  are considering cancelling is actually still alive, or already back to idle.
+- **Send the process a ^C.** Press it in the terminal that started the server, or run
+  `kill -INT` on its process ID.
+
+The machine is left exactly as it was, so you can look at it and carry on with another `run`.
+A ^C that arrives while no `run` is in progress does nothing to the guest, and a new `run`
+always starts clean.
+
+This changes what ^C does to an `--mcp` server you started by hand: the first ^C is caught,
+not fatal. If you press ^C again before the server has reported the first one, the second
+one ends the server as ^C normally would. A server started in the background, or with
+`nohup`, ignores ^C altogether, as any such program does.
+
+`status`'s `pc`/`steps` are only ever as fresh as the last `run` — a `step` or a `monitor`
+command moves the real PC without updating them, and `steps` resets to zero on the next
+`run`, so it is not monotonic across runs. `generation` is: it climbs on every publish, so
+it is the field to watch for "still advancing" versus "stuck on the same slice."
 
 Under `--mcp` the console line is quietly re-seated onto an in-memory terminal the server
 owns (there is no host keyboard behind a pipe), which is what `send`/`run`/`recv` read and

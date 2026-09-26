@@ -333,8 +333,11 @@ int main(int argc, char** argv) {
         }
         // The author's `#>` notes, to stdout, once the file is known good. Unlike the
         // discovery line above -- which is narration and goes to stderr -- these are the
-        // file's own message to whoever runs it, and are meant to be seen.
-        for (const std::string& note : notes) std::cout << note << "\n";
+        // file's own message to whoever runs it, and are meant to be seen. Except under
+        // --mcp: there stdout IS the JSON-RPC transport and carries nothing else, so the
+        // notes go to stderr, still in front of a human running the server (#459).
+        std::ostream& to = mcp ? std::cerr : std::cout;
+        for (const std::string& note : notes) to << note << "\n";
     } else {
         // -n: an empty backplane. Every read floats to FF, because nothing is
         // driving anything. That is not a broken machine, it is an empty one --

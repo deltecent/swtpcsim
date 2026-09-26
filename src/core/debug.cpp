@@ -1,5 +1,7 @@
 #include "core/debug.h"
 
+#include <csignal>
+
 #include "core/machine.h"
 #include "cpu/cpu.h"
 
@@ -13,10 +15,51 @@ namespace swtpc {
 
 // The ONE thing a signal handler is allowed to touch. Not a std::string, not the
 // machine, not a stream -- a lock-free flag, and nothing else.
-static std::atomic<bool> g_interrupt{false};
+static std::atomic<bool> g_stopRequest{false};
 
-void Debugger::interrupt() { g_interrupt.store(true); }
-void Debugger::clearInterrupt() { g_interrupt.store(false); }
+void Debugger::requestStop() { g_stopRequest.store(true); }
+void Debugger::clearStopRequest() { g_stopRequest.store(false); }
+bool Debugger::stopRequested() { return g_stopRequest.load(); }
+
+// See SigintGuard in debug.h for the whole reasoning, including why the second ^C
+// has to kill. `g_prevSigint` is read only by the handler and written only when a
+// guard is constructed or destroyed, which never happens while one is in flight.
+static void (*g_prevSigint)(int) = nullptr;
+
+static void onSigint(int sig) {
+    if (g_stopRequest.exchange(true)) {
+        // The previous one was never consumed -- this operator is not being heard. Die the
+        // way they meant: the default disposition, not whatever was installed before us.
+        std::signal(sig, SIG_DFL);
+        std::raise(sig);
+    }
+}
+
+// IF IT WAS IGNORED, LEAVE IT IGNORED -- the same POSIX idiom, and for the same reason,
+// as armSignalHandlers() in platform/posix/terminal_posix.cpp. A process started in the
+// BACKGROUND or under `nohup` inherits SIGINT already set to SIG_IGN, precisely so a ^C
+// meant for the foreground job cannot reach it; SIG_IGN survives exec. Installing over
+// that would make `nohup altairsim … --mcp &` answerable to a keystroke aimed at
+// something else -- and, with the second-^C rule above, killable by one. (Found exactly
+// that way: a test script launched the server as a background job, so the guard's "previous
+// handler" was SIG_IGN and the kill path restored *ignore* -- the process could not be
+// stopped by any number of ^Cs.)
+SigintGuard::SigintGuard() {
+    prev_ = std::signal(SIGINT, onSigint);
+    if (prev_ == SIG_IGN) {          // detached: put it back and stay out of the way
+        std::signal(SIGINT, SIG_IGN);
+        installed_ = false;
+        return;
+    }
+    installed_   = true;
+    g_prevSigint = prev_;
+}
+
+SigintGuard::~SigintGuard() {
+    if (!installed_) return;
+    std::signal(SIGINT, prev_);
+    g_prevSigint = nullptr;
+}
 
 const char* breakKindName(BreakKind k) {
     switch (k) {
@@ -310,7 +353,7 @@ void Debugger::matchCycleBreak(const BusCycle& c) {
 // ---------------------------------------------------------------------------
 // The run loop. This is the debugger, and it asks only generic questions.
 // ---------------------------------------------------------------------------
-RunResult Debugger::run(uint64_t maxSteps) {
+RunResult Debugger::run(uint64_t maxSteps, bool clearPending) {
     RunResult r;
 
     CpuCore* cpu = m_.cpu();
@@ -331,7 +374,7 @@ RunResult Debugger::run(uint64_t maxSteps) {
     // an unrelated hit at the new address.
     if (skipArmed_ && cpu->pc() != resumeCyclePc_) skipArmed_ = false;
 
-    clearInterrupt();
+    if (clearPending) clearStopRequest();
     armObserver();
     m_.running = true;
 
@@ -624,8 +667,8 @@ RunResult Debugger::run(uint64_t maxSteps) {
             break;
         }
 
-        if (g_interrupt.load()) {
-            r.why = StopReason::Interrupted;
+        if (g_stopRequest.load()) {
+            r.why = StopReason::StopRequested;
             break;
         }
 

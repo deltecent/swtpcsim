@@ -167,10 +167,24 @@ off the board itself, so ask `board_types` what a board can be told rather than 
 
 | Tool | Args | Does |
 |---|---|---|
-| `run` | `from?`, `input?`, `until?`, `timeout_ms?` (2000), `max_steps?` | Type `input`, advance the guest, return what it printed. Stops on `until` match, a **prompt** (guest idle on console input), `timeout_ms`, `max_steps`, WAI or breakpoint — see `stopped`. `from` sets PC first (that is how you boot). **Never blocks.** |
+| `run` | `from?`, `input?`, `until?`, `timeout_ms?` (2000, max 600000), `max_steps?` | Type `input`, advance the guest, return what it printed. Stops on `until` match, a **prompt** (guest idle on console input), `timeout_ms`, `max_steps`, WAI, a breakpoint, an address no board decodes under `SET BUS UNCLAIMED=HALT` (`unclaimed`), a `BREAK TAPE STOP` (`tape-stop`), or a cancel of the request (`notifications/cancelled`) or a ^C sent to the swtpcsim process (both give `stopped: "interrupted"`) — see `stopped`. `timeout_ms` is a ceiling, not a wait: the call returns as soon as one of the others fires. `from` sets PC first (that is how you boot). Bus and board messages from the run, such as a `SET BUS UNCLAIMED=WARN` line, come back in `warnings`. **Never blocks.** |
 | `send` | `text` | Type at the console without running. |
 | `recv` | — | Drain output since last read, without running. |
 | `regs` | — | CPU registers now (`pc`, `halted`, `registers{}`). |
+| `status` | — | Answered at once, even mid-`run`: `in_flight`, and the `pc`/`steps` of the last `run` (see below). |
+
+**Control bytes: use `\uXXXX`.** `input` and `text` are raw bytes — whatever you pass reaches
+the guest untouched, control characters included, and every line in the machine is 8-bit
+clean. Write a control byte as the JSON escape it is: `\u0003` for ^C, `\u001a` for ^Z,
+`\u001b` for ESC.
+
+```
+send {text: "\u001b"}                        # ESC: FLEX pauses the listing in progress
+```
+
+`\x03` is **not** JSON — there is no `\x` escape in the format — and it is not rejected
+either: it reaches the guest as the three ordinary characters `x03`. If a control byte seems
+to vanish while printable text gets through, that is the reason.
 
 **`monitor`** `{command}` runs any one monitor command (`CONNECT`, `MOUNT`, `SET`, `DUMP`,
 `DISASM`, …) and returns its text — the escape hatch for anything without a dedicated tool.
@@ -200,8 +214,45 @@ run {input: "CAT\r", until: "+++"}               # a command, read the reply
 ```
 
 `\r` submits a FLEX line. `run` also returns on its own when the guest reaches a prompt
-(`stopped: "idle"`), so you rarely need to guess a timeout for interactive commands — set a
-generous `timeout_ms` only for long silent work (a disk load, a long assembly).
+(`stopped: "idle"`), so you rarely need to guess a timeout for interactive commands.
+
+**`timeout_ms` is a ceiling, not a wait.** The call ends the moment `until` matches or the
+guest reaches a prompt, so a budget larger than the job costs you nothing — a 50-second
+assembly under `timeout_ms: 120000` returns in 50 seconds, not 120. There is no reason to
+trim it to what you expect the work to take, and no need to re-issue `run` by hand to walk a
+long job forward. Set it to the worst case you are willing to sit through and let `until` end
+the call. The maximum is 600000 (ten minutes); anything larger is clamped to it.
+
+**`from` is a JSON number, and JSON has no hex.** The `0xE0D0` above is shorthand; on the wire
+write the decimal value: `57552` for `E0D0`, `65496` for `FFD8`. A string such as `"0xE0D0"` is
+not a number, so the server refuses the call and tells you the number to send: `` `from` must be
+a JSON number, not a string: "0xE0D0" is 57552 ``. Every tool checks its arguments this way, so a
+wrong type or a missing required argument is an error, and never a silent 0.
+
+### Stopping a `run` early, and `status`
+
+A `run` ends by itself at `timeout_ms`. Two things stop it sooner, and both return
+`stopped: "interrupted"` with what the guest printed so far:
+
+- **Cancel the request.** Send the standard `notifications/cancelled` with the request id of the
+  `run`. The server reads its input while a `run` goes on, so it sees the cancel at once. A cancel
+  that names another request, or that arrives after the `run` returned, is ignored, and it never
+  applies to the next call. Other requests sent during a `run` wait, and are answered in order after
+  it returns.
+- **Send the process a `^C`** (`kill -INT`). The first `^C` is caught and only interrupts the `run`.
+  A second `^C` before the server has reported the first one ends the server. A server started in
+  the background, or with `nohup`, ignores `^C`.
+
+Either way the machine is left as it was, and the next `run` starts clean. A `^C` with no `run` in
+progress does nothing to the guest.
+
+**`status` never waits.** It is answered by the reader thread, not the worker, so it answers even
+while a `run` (or a long `monitor`, `mem_load` or `snapshot`) is in progress. It returns the board
+id, `in_flight` (whether the worker is busy on any request), and the `pc` and `steps` of the last
+`run`. Those two go stale: a `step` or a `monitor` command moves the real PC without changing them,
+and `steps` restarts at zero on the next `run`. `generation` is the one field that always climbs, so
+use it to tell "still advancing" from "stuck on the same slice". Poll `status` before you cancel, to
+see whether the `run` is still alive.
 
 ## Recipe: boot FLEX and work with the disk
 
@@ -470,11 +521,12 @@ other swtpcsim) that has it, or the attach fails busy. swtpcsim already flushes 
 (`tcflush`), so an external flush is redundant — and worse, opening the port from pyserial toggles
 DTR/RTS, which can knock a device out of its current mode. Let the sim own the port.
 
-**A live transfer holds `run` open.** During a streaming read `run` gets a wall-clock grace
-window: it keeps going while bytes are still crossing and returns only when the wire quiets or
-`until` matches — it will **not** cut a transfer at `timeout_ms`. (On older builds a long read
-could return `stopped: "idle"` mid-transfer; if you see that, resume with `run` and no new `from`
-and watch a destination pointer climb via `regs`/`mem_dump` until it completes.)
+**`timeout_ms` bounds a live transfer too.** Traffic on a real device does not extend the budget.
+Give a streaming read a `timeout_ms` as long as its worst case (up to
+600000 ms) and let `until` end the call early, same as any other command; a call that hits
+`timeout_ms` mid-transfer returns `stopped: "timeout"` with what it read so far, which is a normal
+result to resume `run` (no new `from`) on, not a failure. Watch a destination pointer climb via
+`regs`/`mem_dump` if you want to confirm it is still making progress rather than stuck.
 
 ## Toward a real machine
 

@@ -71,6 +71,8 @@ startup = ["RESET", "RUN"]
   through the file — they print in the order they appear.
 - **`#>` on its own prints a blank line**, so you can space a note into a short paragraph.
 - **A `#>` can trail a setting**, too: `name = "flex"  #> the 40-track variant`.
+- **Under `--mcp` the notes go to stderr.** There stdout carries only the MCP messages, so a
+  client reading it sees nothing else; you still see the notes in the terminal.
 - It is still a comment. It **sets nothing**, and `CONFIG SAVE` does not write it back — a
   saved machine is the backplane, not the prose around it. If a note is worth keeping, keep it
   in the file you wrote by hand.

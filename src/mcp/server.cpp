@@ -4,6 +4,7 @@
 #include "boards/registry.h"
 #include "cli/monitor.h"
 #include "core/crc32.h"
+#include "core/debug.h"
 #include "core/hex.h"
 #include "core/roms.h"
 #include "core/version.h"
@@ -17,9 +18,13 @@
 #include "util/json.h"
 
 #include <chrono>
+#include <cmath>
+#include <condition_variable>
+#include <deque>
 #include <fstream>
 #include <iostream>
 #include <istream>
+#include <mutex>
 #include <ostream>
 #include <sstream>
 #include <thread>
@@ -163,27 +168,45 @@ Json toolList() {
         p["from"]       = intSchema("Optional start address: set PC here first (like RUN <addr>). "
                                     "Omit to resume from the current PC.");
         p["input"]      = strSchema("Optional keystrokes to type at the console before running "
-                                    "(raw bytes; add a trailing \\r to submit a CP/M line).");
+                                    "(raw bytes; add a trailing \\r to submit a FLEX line). "
+                                    "Control bytes go through untouched -- write one as the JSON "
+                                    "escape it is: \\u0003 is ^C, \\u001a is ^Z, \\u001b is ESC. "
+                                    "\\x03 is NOT JSON and arrives as the characters x03.");
         p["until"]      = strSchema("Optional: stop as soon as this substring appears in the "
-                                    "output (e.g. a prompt like \"A0>\").");
-        p["timeout_ms"] = intSchema("Wall-clock budget for this call in ms (default 2000). By "
-                                    "default the guest runs flat out and this only bounds how "
-                                    "long we wait; with `SET cpu0 clock_hz=N` set, the guest is "
-                                    "paced to that crystal so a real serial/socket device has "
-                                    "wall-clock time to reply within this budget.");
+                                    "output (e.g. a prompt like \"+++\").");
+        p["timeout_ms"] = intSchema("Wall-clock ceiling for this call in ms (default 2000, max "
+                                    "600000). A CEILING, NOT A WAIT: the call returns the moment "
+                                    "`until` matches or the guest reaches a prompt, so a budget "
+                                    "bigger than the job costs nothing -- set it to the longest "
+                                    "you will sit through rather than re-issuing `run` to walk a "
+                                    "long job forward. By default the guest runs flat out and "
+                                    "this only bounds how long we wait; with `SET cpu0 clock_hz=N` "
+                                    "set, the guest is paced to that crystal so a real serial/"
+                                    "socket device has wall-clock time to reply within this "
+                                    "budget.");
         p["max_steps"]  = intSchema("Optional instruction-count cap for this call.");
         list.push(tool("run",
                        "Advance the running guest a bounded slice and return what it printed to "
                        "the console. STOPS on: `until` matched, a prompt reached (the guest is "
                        "spinning on console input with nothing to say), timeout_ms, max_steps, a "
-                       "HLT, or a breakpoint -- reported in `stopped`. This is the expect loop: "
-                       "type a command with `input`, read the reply, call again. Never blocks.",
+                       "WAI, a breakpoint, an address no board decodes under SET BUS "
+                       "UNCLAIMED=HALT (`unclaimed`), a BREAK TAPE STOP (`tape-stop`), a "
+                       "`notifications/cancelled` naming this call's "
+                       "request id, or a SIGINT to the swtpcsim process itself (an "
+                       "out-of-band ^C) -- reported in `stopped`, the last two as "
+                       "`interrupted`. Bus and board messages from the run (a SET BUS "
+                       "UNCLAIMED=WARN line, say) come back in `warnings`. This is the expect "
+                       "loop: type a command with `input`, read the reply, call again. Never "
+                       "blocks.",
                        p, {}));
     }
     {
         Json p = Json::obj();
         p["text"] = strSchema("Keystrokes to type at the console (raw bytes). Does NOT run the "
-                              "guest -- follow with `run` (or use run's own `input`).");
+                              "guest -- follow with `run` (or use run's own `input`). Control "
+                              "bytes go through untouched -- write one as the JSON escape it is: "
+                              "\\u0003 is ^C, \\u001a is ^Z, \\u001b is ESC. \\x03 is NOT JSON "
+                              "and arrives as the characters x03.");
         list.push(tool("send", "Type at the guest console without running it.", p, {"text"}));
     }
     list.push(tool("recv",
@@ -340,6 +363,27 @@ Json toolList() {
                        "accepts at the prompt.",
                        p, {"id", "unit", "endpoint"}));
     }
+    list.push(tool("status",
+                   "A guaranteed-non-blocking check (#490): board id, whether the worker is "
+                   "currently dispatched on ANY request -- not just `run`; a long `monitor`/"
+                   "`mem_load`/`snapshot` counts too -- plus the step count and PC as of the "
+                   "last `run`. "
+                   "Unlike every other tool, this one is answered directly by the reader thread "
+                   "rather than the worker, so it still answers while the server is wedged or "
+                   "mid-flight on anything -- the exact case where `recv`, `regs`, even a fresh "
+                   "`who` would sit queued behind it. `pc`/`steps` come from `run` specifically "
+                   "and go stale the moment something else moves the machine: a `step` or a "
+                   "`monitor` command advances the real PC without updating them, and `steps` "
+                   "restarts at zero on the next `run`, so it can go backwards between runs. "
+                   "`generation` is the only field guaranteed to keep climbing, so use it (not "
+                   "`steps`) to tell 'still advancing' from 'stuck on the same slice.' "
+                   "`in_flight: false` means nothing is dispatched at this instant, NOT that the "
+                   "queue is drained -- the worker clears one request before picking up the next, "
+                   "and a poll can land in that gap. Because it "
+                   "can land ahead of requests queued before it, don't sequence it with the "
+                   "rest of a script; poll it, standalone, whenever you need to know if the "
+                   "server is still alive.",
+                   Json::obj(), {}));
     return list;
 }
 
@@ -468,6 +512,64 @@ Json dataResult(const Json& data, const std::string& text) {
     return r;
 }
 
+// A string sent where the schema says integer is almost always an address someone wrote
+// in hex, because JSON has none. Say what number to send instead: "0xFF00" is 65280.
+std::string integerHint(const std::string& s) {
+    if (s.empty()) return "";
+    if (s.find_first_not_of("0123456789") == std::string::npos)
+        return ": write " + s + ", not \"" + s + "\"";
+    std::string h = s;
+    if (h.size() > 2 && h[0] == '0' && (h[1] == 'x' || h[1] == 'X')) h = h.substr(2);
+    else if (h.size() > 1 && (h.back() == 'h' || h.back() == 'H')) h.pop_back();
+    if (h.empty() || h.size() > 8 || h.find_first_not_of("0123456789abcdefABCDEF") != std::string::npos)
+        return "";
+    return ": \"" + s + "\" is " + std::to_string(std::stoull(h, nullptr, 16));
+}
+
+// CHECK THE ARGUMENTS AGAINST THE TOOL'S OWN inputSchema before any tool code reads them
+// (#579). Json's accessors return a default for the wrong type -- integer() of a string is
+// 0 -- so without this "from":"0xFF00" ran from PC 0 and "lo":"0x100" dumped address 0,
+// with no error. One check here covers every tool: a required argument that is missing, and
+// an integer, string or boolean of the wrong JSON type. Empty = fine.
+std::string checkArgs(const std::string& name, const Json& args) {
+    static const Json tools = toolList();
+    const Json* schema = nullptr;
+    for (const auto& t : tools.items())
+        if (t.at("name").str() == name) schema = &t.at("inputSchema");
+    if (!schema) return "";  // an unknown tool is callTool's to report
+    for (const auto& r : schema->at("required").items())
+        if (!args.has(r.str())) return "`" + r.str() + "` is required";
+    for (const auto& [key, v] : args.fields()) {
+        const std::string want = schema->at("properties").at(key).at("type").str();
+        if (want == "integer") {
+            if (v.type() == Json::T::Num && v.num() == std::floor(v.num())) continue;
+            std::string msg = "`" + key + "` must be a JSON number";
+            if (v.type() == Json::T::Str) msg += ", not a string" + integerHint(v.str());
+            return msg;
+        }
+        if (want == "string" && v.type() != Json::T::Str)
+            return "`" + key + "` must be a JSON string";
+        if (want == "boolean" && v.type() != Json::T::Bool)
+            return "`" + key + "` must be true or false";
+    }
+    return "";
+}
+
+// What the bus and the boards said while the guest ran -- a SET BUS UNCLAIMED=WARN line,
+// a contention report, a disk that would not sync. Monitor::flush() prints the same two
+// logs after a RUN; under MCP they come back as `warnings` (#580).
+Json drainWarnings(Machine& m, std::string& text) {
+    Json w = Json::arr();
+    for (const auto& s : m.bus.drain()) w.push(Json(s));
+    m.bus.clearLog();
+    for (const auto& s : m.drainBoardLog()) w.push(Json(s));
+    for (const auto& s : w.items()) {
+        if (!text.empty() && text.back() != '\n') text += '\n';
+        text += s.str();
+    }
+    return w;
+}
+
 bool parseBytes(const std::string& s, std::vector<uint8_t>& out) {
     std::istringstream in(s);
     std::string t;
@@ -492,7 +594,7 @@ const char* stopReasonName(StopReason w) {
     case StopReason::Halted:       return "halt";
     case StopReason::Attn:         return "attn";
     case StopReason::InputEnded:   return "input-ended";
-    case StopReason::Interrupted:  return "interrupted";
+    case StopReason::StopRequested:  return "interrupted";
     case StopReason::WindowClosed: return "window-closed";
     case StopReason::NoCpu:        return "no-cpu";
     case StopReason::StepTarget:   return "step-target";
@@ -554,6 +656,27 @@ Json breakpointJson(const Breakpoint& b) {
 // The interactive console the four live tools share. Non-owning: the chip owns the
 // ScriptedStream; we remember only WHICH channel it is, and re-fetch the live pointer
 // every call so a reconnect can never leave us holding a dangling one.
+// #490: what `status` reports, published by the `run` tool's WORKER-thread loop at each
+// slice boundary and read by the READER thread to answer `status` out of band -- see
+// runMcp's reader/worker split for why a second thread exists at all. This is a snapshot,
+// not a live view: the whole point of `status` is that it must still answer while `run` is
+// wedged or mid-flight, which rules out synchronizing with the worker for an
+// up-to-the-instruction value (and reading cpu->pc() off the reader thread while the worker
+// is running it would be a genuine data race, not just a stale read). Copied as a whole
+// struct under McpSession::statusMu, never touched field-by-field without that lock.
+// No `inFlight` field here on purpose: it used to mean "a `run` is executing," which made
+// `status` blind to a long `monitor`/`mem_load`/`snapshot` call -- the exact case it exists
+// to catch. `in_flight` in the reply is now read from `haveCurrentId` instead (the reader
+// thread's own "is the worker mid-request" flag, already there for cancellation), which is
+// true for whichever tool the worker is running, not just `run`. See statusResult().
+struct RunSnapshot {
+    uint64_t    seq      = 0;    // bumped on every publish -- lets a poller tell "still
+                                  // advancing" from "the same slice as last time"
+    uint64_t    steps    = 0;
+    uint32_t    pc       = 0;
+    std::string boardId;
+};
+
 struct McpSession {
     std::string conBoard;
     std::string conUnit;
@@ -561,7 +684,57 @@ struct McpSession {
     // MirrorStream so a human can telnet in and share the session (issue #381). Empty =
     // the bare scripted line. Set once at startup (runMcp), read by console().
     std::string mirror;
+
+    // #490: guards `status` below. Every read/write is a whole-struct copy under this
+    // lock -- see RunSnapshot's own comment for why individual atomics are not enough
+    // (board id is a std::string, not atomic-sized, and the fields must not tear against
+    // each other: a poller must never see this slice's steps against last slice's pc).
+    std::mutex  statusMu;
+    RunSnapshot status;
 };
+
+// The board id for whichever board carries a CpuCard, or empty if there is none. Same walk
+// as Machine::cpuCard() (core/machine.cpp), but Board-typed: CpuCard is a bare interface
+// (activeCore() and friends) and carries no id of its own -- only Board does, on whatever
+// concrete class multiply-inherits both. Used to seed and refresh the #490 status snapshot.
+std::string cpuBoardId(Machine& m) {
+    for (const auto& b : m.boards())
+        if (dynamic_cast<CpuCard*>(b.get())) return b->id;
+    return std::string();
+}
+
+// #490's out-of-band reply. `in_flight` and the RunSnapshot fields come from two different
+// locks, taken one at a time and never nested -- see queueMu/haveCurrentId's own comment
+// (by runMcp's reader/worker split) for why `in_flight` has to be sourced there rather than
+// from the snapshot, and RunSnapshot's own comment for why the rest is a snapshot at all.
+// Callable from either thread.
+Json statusResult(McpSession& sess, std::mutex& queueMu, const bool& haveCurrentId) {
+    bool inFlight;
+    {
+        std::lock_guard<std::mutex> lk(queueMu);
+        inFlight = haveCurrentId;
+    }
+    RunSnapshot snap;
+    {
+        std::lock_guard<std::mutex> lk(sess.statusMu);
+        snap = sess.status;
+    }
+    Json d = Json::obj();
+    d["board"]      = Json(snap.boardId);
+    d["in_flight"]  = Json(inFlight);
+    d["steps"]      = Json((long long)snap.steps);
+    d["pc"]         = Json((long long)snap.pc);
+    d["generation"] = Json((long long)snap.seq);
+
+    char pcHex[16];  // RunSnapshot::pc is uint32_t; "%04X" of a full 32-bit value needs 9
+                     // bytes, not the 8-bit CPU's usual 4 -- oversized on purpose.
+    std::snprintf(pcHex, sizeof pcHex, "%04X", (unsigned)snap.pc);
+    std::string text = snap.boardId.empty() ? "(no board)" : snap.boardId;
+    text += inFlight ? " busy" : " idle";
+    text += ", steps=" + std::to_string(snap.steps) + " pc=" + pcHex;
+    if (inFlight) text += " (pc/steps are the last run's published slice boundary, not a live read)";
+    return dataResult(d, text);
+}
 
 // The scripted line the interactive tools drive -- reached THROUGH whatever wraps it.
 // Bare, the unit's stream IS the ScriptedStream; the console binding wraps it in the
@@ -607,10 +780,12 @@ ScriptedStream* console(Machine& m, McpSession& s, std::string& err) {
             // back as bit-7 parity junk (0x4F 'O' -> 0xCF). The transforms are the console's,
             // applied to the console's stand-in; the endpoint grammar deliberately cannot
             // express a filter (host/filter.h), so it is installed as a pre-built stream.
+            // It FOLLOWS the console's settings rather than copying them, so a SET CONSOLE
+            // made mid-session reaches the guest (issue #529).
             auto base = resolveEndpoint(baseSpec, err);
             if (!base) return nullptr;
             auto filt = std::make_unique<FilterStream>(std::move(base));
-            filt->copySettingsFrom(Console::instance().filter());
+            filt->follow(Console::instance().filter());
 
             // connectStream takes the pre-built, filtered stack. A board not taught the seam
             // refuses; fall back to the bare line -- no transforms, but no regression. (Every
@@ -629,6 +804,8 @@ ScriptedStream* console(Machine& m, McpSession& s, std::string& err) {
 
 Json callTool(Machine& m, McpSession& sess, const std::string& name, const Json& args) {
     char buf[256];
+
+    if (std::string bad = checkArgs(name, args); !bad.empty()) return textResult(bad, true);
 
     if (name == "board_types") {
         Json a = Json::arr();
@@ -959,6 +1136,27 @@ Json callTool(Machine& m, McpSession& sess, const std::string& name, const Json&
         if (args.has("from")) cpu->setPc((uint16_t)args.at("from").integer());
         if (args.has("input")) con->feed(args.at("input").str());
 
+        // Re-arm the unclaimed-address de-dup for this run, as runMachine does for a RUN, so
+        // an absent address reported by the last run is reported again by this one (#580).
+        m.bus.resetUnclaimedWarnings();
+
+        // #490: publish a slice-boundary snapshot so `status`, answered out of band by the
+        // reader thread, can report on THIS run without ever touching the Machine/CpuCore
+        // itself -- see RunSnapshot's own comment for why that split has to exist, and
+        // statusResult()'s own comment for why `in_flight` itself is NOT one of these fields.
+        // One publish now (before the first slice runs), one after each slice below, and one
+        // right after the loop alongside the `d` this call is about to return -- so a
+        // poller's last look always matches what the caller of `run` itself was told.
+        const std::string boardId = cpuBoardId(m);
+        auto publishStatus = [&](uint64_t stepsSoFar) {
+            std::lock_guard<std::mutex> lk(sess.statusMu);
+            sess.status.boardId  = boardId;
+            sess.status.steps    = stepsSoFar;
+            sess.status.pc       = cpu->pc();
+            ++sess.status.seq;
+        };
+        publishStatus(0);
+
         const std::string until   = args.has("until") ? args.at("until").str() : std::string();
         long long         timeout = args.has("timeout_ms") ? args.at("timeout_ms").integer() : 2000;
         if (timeout < 0) timeout = 0;
@@ -989,10 +1187,15 @@ Json callTool(Machine& m, McpSession& sess, const std::string& name, const Json&
         const auto      start  = clk::now();
 
         // IS A REAL DEVICE ON A LINE? -- a serial cable, a socket, anything but the MCP console
-        // and an empty jack. It changes what "the guest is doing nothing" means: on such a wire,
-        // silence is usually the guest waiting on a reply that arrives hundreds of ms later, or
-        // the gap between two blocks of a disk read, and a byte can land at any moment in WALL
-        // time no matter how the CPU is clocked (#424).
+        // and an empty jack. This governs ONLY the idle-stop grace below (`idleDwell`): on such a
+        // wire, a quiet slice does not mean the guest reached a prompt -- it may be waiting on a
+        // reply that lands hundreds of ms later, or sitting in the gap between two blocks of a
+        // disk read (#424). It does NOT extend timeout_ms. An earlier version of this loop also
+        // let live-wire traffic renew the deadline itself, so a peer that said anything at all,
+        // however slowly, kept the call going indefinitely (#487) -- timeout_ms is now a hard
+        // wall-clock ceiling no matter what is arriving on any line. A transfer that needs longer
+        // gets a bigger timeout_ms and a caller that loops on stopped:"timeout", not an unbounded
+        // wait built into the tool.
         bool hasLiveWire = false;
         for (const auto& b : m.boards())
             for (const auto& u : b->units()) {
@@ -1002,21 +1205,19 @@ Json callTool(Machine& m, McpSession& sess, const std::string& name, const Json&
                 hasLiveWire = true;
             }
 
-        // The wall-clock grace a live wire buys: idle is not declared, and an active transfer is
-        // not cut off at the budget, until the wire has been silent this long. Zero with no
-        // device -- there the instruction-count rule alone decides idle, exactly as before, so we
-        // still "idle on instruction count" for a plain interactive prompt.
+        // The wall-clock grace the idle-stop (below) waits out before it will call a live wire's
+        // silence "idle". Zero with no device -- there the instruction-count rule alone decides,
+        // exactly as before, so a plain interactive prompt still "idles on instruction count".
         const auto idleDwell = hasLiveWire ? std::chrono::milliseconds(5000)
                                            : std::chrono::milliseconds(0);
 
-        const auto deadline     = start + std::chrono::milliseconds(timeout);
-        const auto hardDeadline = start + std::chrono::milliseconds(600000);  // absolute 10-min cap
+        const auto deadline = start + std::chrono::milliseconds(timeout);
         std::string     out;
         uint64_t        steps = 0;
         int             quietSlices = 0;         // consecutive quiet slices -- the instruction-count rule
         clk::time_point idleSince{};             // when this unbroken run of quiet began; unset = busy
-        clk::time_point lastRxAt{};              // wall time of the last byte in on any line; unset = none
         std::string     stopped;
+        RunResult       last;                    // the slice that stopped on unclaimed/tape-stop
 
         auto drain = [&] {
             const std::string& o = con->out();
@@ -1026,23 +1227,35 @@ Json callTool(Machine& m, McpSession& sess, const std::string& name, const Json&
         for (;;) {
             drain();
             if (!until.empty() && out.find(until) != std::string::npos) { stopped = "match"; break; }
-            if (clk::now() >= deadline) {
-                // The budget is up -- but do not cut off a transfer that is still streaming. On a
-                // live wire, a byte received within idleDwell means the guest is mid-transaction
-                // (a boot loader pulling 512-byte blocks over a 38.4k serial line runs many
-                // seconds), so let it finish and return only once the wire has genuinely gone
-                // quiet. The absolute ceiling still bounds a peer that never stops talking.
-                const bool activeTransfer = hasLiveWire && lastRxAt != clk::time_point{} &&
-                                            clk::now() - lastRxAt < idleDwell;
-                if (!activeTransfer || clk::now() >= hardDeadline) { stopped = "timeout"; break; }
+            // ASK BEFORE THE SLICE, not just after it. A stop request that arrived since the last
+            // slice returned -- and with a clock_hz set, most of this loop's wall time is the
+            // pacing sleep below -- is caught here. Measured before this check existed, when
+            // every slice still cleared the flag on entry: five of eight ^Cs swallowed at
+            // clock_hz=2000000. The slice below no longer clears it either (see there).
+            if (Debugger::stopRequested()) {
+                // CONSUME it: reporting it to the client is what "handled" means. Leave it
+                // standing and the next ^C -- the one that means "I said stop" -- would find
+                // an unconsumed flag and kill the process (SigintGuard, core/debug.h) even
+                // though this one was heard and answered.
+                Debugger::clearStopRequest();
+                stopped = "interrupted";
+                break;
             }
+            if (clk::now() >= deadline) { stopped = "timeout"; break; }
             if (maxSteps && steps >= maxSteps) { stopped = "steps"; break; }
 
             const uint64_t rxBefore     = m.rxBytes();
             const uint64_t hungryBefore = con->hungry();
-            RunResult r = m.debug.run(2000);
+            // KEEP A PENDING STOP REQUEST (the `false`). The check at the top of this loop and the
+            // slice are two steps, and a cancel or ^C can land between them. If the slice cleared
+            // the flag on entry, as a whole RUN does, that one would be erased unseen and the run
+            // would go on to its full budget: on Windows, 9 cancels in 5000 were lost that way.
+            // This request's stale flag was already cleared once, at dispatch (runMcp), so
+            // keeping it here cannot resurrect an old one.
+            RunResult r = m.debug.run(2000, false);
             m.pump();
             steps += r.steps;
+            publishStatus(steps);  // #490: this slice's boundary, for `status` to read
 
             // Keep wall-clock in step with the crystal (see the baseline above). Only when a
             // clock_hz was asked for; free() is the flat-out default and never sleeps here.
@@ -1058,11 +1271,19 @@ Json callTool(Machine& m, McpSession& sess, const std::string& name, const Json&
             const bool produced = out.size() != wroteBefore;
             const bool received = m.rxBytes() != rxBefore;
             const uint64_t hungry = con->hungry() - hungryBefore;
-            if (received) lastRxAt = clk::now();  // the wire is live -- keep the transfer going
 
-            if (r.why == StopReason::Halted)     { stopped = "halt";       break; }
-            if (r.why == StopReason::Breakpoint) { stopped = "breakpoint"; break; }
-            if (r.why == StopReason::NoCpu)      { stopped = "no-cpu";      break; }
+            if (r.why == StopReason::Halted)      { stopped = "halt";        break; }
+            if (r.why == StopReason::Breakpoint)  { stopped = "breakpoint";  break; }
+            if (r.why == StopReason::NoCpu)       { stopped = "no-cpu";      break; }
+            if (r.why == StopReason::StopRequested) { Debugger::clearStopRequest();
+                                                    stopped = "interrupted"; break; }
+            // SET BUS UNCLAIMED=HALT and BREAK TAPE STOP stop the monitor's RUN; they stop
+            // this one too (#580). `last` keeps the address for the stop line below.
+            if (r.why == StopReason::Unclaimed || r.why == StopReason::TapeStop) {
+                last    = r;
+                stopped = stopReasonName(r.why);
+                break;
+            }
 
             // IDLE-STOP -- hand control back when the guest has nothing to do, so the AI is not
             // made to wait out timeout_ms for its next command. Gated on clock.idle() like
@@ -1089,12 +1310,25 @@ Json callTool(Machine& m, McpSession& sess, const std::string& name, const Json&
             }
         }
 
+        publishStatus(steps);  // #490: this call is done -- the next status poll's `steps`/`pc`
+                                // are this call's own final values (its `in_flight` comes from
+                                // `haveCurrentId`, which the caller below is about to clear)
+
         Json d = Json::obj();
         d["output"]  = Json(out);
         d["stopped"] = Json(stopped);
         d["pc"]      = Json((long long)cpu->pc());
         d["steps"]   = Json((long long)steps);
         std::string text = out;
+        if (stopped == "unclaimed") {
+            // The monitor's stop line, so the text says WHICH address; the warning with the PC
+            // follows it, from the bus log.
+            std::snprintf(buf, sizeof buf, "stopped: %s 0x%04X, which no board decodes",
+                          last.write ? "write to" : "read from", last.addr);
+            if (!text.empty() && text.back() != '\n') text += '\n';
+            text += buf;
+        }
+        d["warnings"] = drainWarnings(m, text);
         if (!text.empty() && text.back() != '\n') text += '\n';
         text += "[stopped: " + stopped + "]";
         return dataResult(d, text);
@@ -1106,6 +1340,22 @@ Json callTool(Machine& m, McpSession& sess, const std::string& name, const Json&
         mon.setMcpMode(true);  // RUN parks instead of blocking -- a bare RUN (or the RUN a
                                // CONFIG LOAD startup ends in) would otherwise wedge the server.
         mon.exec(args.at("command").str(), os);
+
+        // A monitor command can swap the console out from under us: CONFIG LOAD replaces
+        // every board (and with them the scripted line and any --mirror listener), CONNECT
+        // can re-wire the console unit. Re-adopt it NOW rather than on the next send/recv/
+        // run -- otherwise the mirror port is closed meanwhile, and a `step` would run the
+        // guest with its console aimed at our JSON-RPC stdin (issue #481). Idempotent when
+        // nothing changed. Losing a console we held (the mirror port taken, a machine with
+        // no console line) is said once on stderr, as at startup -- never on `out`.
+        std::string conErr;
+        const bool  hadConsole = !sess.conBoard.empty();
+        if (!console(m, sess, conErr)) {
+            if (hadConsole && !conErr.empty())
+                std::cerr << "swtpcsim: --mcp console lost: " << conErr << "\n";
+            sess.conBoard.clear();
+            sess.conUnit.clear();
+        }
         return textResult(os.str().empty() ? "(ok)" : os.str(), mon.failed());
     }
 
@@ -1128,6 +1378,8 @@ Json callTool(Machine& m, McpSession& sess, const std::string& name, const Json&
         Json d = Json::obj();
         std::string text;
         d["registers"] = regsObject(c, text);
+        d["warnings"]  = drainWarnings(m, text);  // an UNCLAIMED=WARN line, say (#580)
+        if (!text.empty() && text.back() != '\n') text += '\n';
         d["steps"]    = Json((long long)steps);
         d["cycles"] = Json((long long)cycles);
         d["pc"]       = Json((long long)c->pc());
@@ -1506,6 +1758,37 @@ void replyError(std::ostream& out, const Json& id, int code, const std::string& 
     out << r.dump() << "\n" << std::flush;
 }
 
+// One line off the wire, already parsed (or not). Queued so the WORKER thread -- the only
+// one that ever touches the Machine or writes to `out` -- drains it in order, while the
+// READER thread (runMcp) keeps consuming stdin even during a long `run`. A parse failure
+// is queued too rather than answered on the spot: `out` has exactly one writer, ever.
+struct QueuedMsg {
+    bool        parseOk = true;
+    std::string parseErr;
+    Json        req;
+};
+
+// HOW DEEP THE QUEUE MAY GET before the reader stops taking more on. A client that
+// pipelines faster than the guest can execute -- or one that talks to a server parked
+// in a long `run` -- would otherwise grow this without limit, and the memory it costs
+// is the client's to spend and ours to pay. At the cap the reader simply stops reading
+// stdin until the worker has drained one; the kernel's pipe buffer takes up the slack
+// and the client blocks on its own write, which is what backpressure is supposed to
+// feel like. Nothing is dropped and nothing is answered out of order.
+//
+// The cap is generous on purpose: a cancellation is acted on in the reader BEFORE the
+// queue is touched, so it overtakes anything waiting -- but only if the reader is still
+// reading. Parking it is therefore one thing that can delay a cancel, and it takes this
+// many un-drained requests to get there, which a client driving a guest will never do by
+// accident.
+//
+// #490 adds a second, narrower way to park the reader: it now writes `status` replies
+// itself, through `safeReply`, which blocks on `outMu` if the worker is mid-write of a
+// large reply into a full pipe. That requires a client not reading its own stdout -- an
+// unusual failure on its own -- but while it lasts, the reader is parked on `outMu`
+// rather than on this cap, and a `notifications/cancelled` behind it waits the same way.
+constexpr size_t kMaxPending = 4096;
+
 } // namespace
 
 int runMcp(Machine& m, std::istream& in, std::ostream& out, const std::string& mirror) {
@@ -1518,6 +1801,16 @@ int runMcp(Machine& m, std::istream& in, std::ostream& out, const std::string& m
     std::string bindErr;
     console(m, sess, bindErr);
 
+    // #490: seed the status snapshot HERE, single-threaded, before the reader/worker split
+    // below even exists -- the one place a direct CPU read is free. After the reader thread
+    // starts, only the `run` tool's own worker-thread loop may write `status`, and only
+    // through statusMu (see RunSnapshot, statusResult()). Left at its default (no board) on
+    // a backplane with no CPU at all.
+    if (m.cpu()) {
+        sess.status.boardId = cpuBoardId(m);
+        sess.status.pc      = m.cpu()->pc();
+    }
+
     // A mirror that could not bind (its port is in use) is worth saying out loud -- but
     // to STDERR, never `out`, which is the JSON-RPC channel a stray line would corrupt.
     // The session still runs; the console just falls back to being un-rebound until a
@@ -1525,17 +1818,121 @@ int runMcp(Machine& m, std::istream& in, std::ostream& out, const std::string& m
     if (!mirror.empty() && !bindErr.empty())
         std::cerr << "swtpcsim: --mirror " << mirror << " failed: " << bindErr << "\n";
 
-    std::string line;
-    while (std::getline(in, line)) {
-        if (line.empty()) continue;
-        Json req;
-        std::string err;
-        if (!Json::parse(line, req, err)) {
-            replyError(out, Json(), -32700, "parse error: " + err);
+    // ^C AS AN OUT-OF-BAND STOP for a wedged `run` (#488, part 1): belt-and-braces for an
+    // external `kill -INT` on the whole process. Installed for the whole session, restored
+    // on return so nothing outlives this function.
+    SigintGuard sigintGuard;
+
+    // THE READER/WORKER SPLIT (#488, part 2): a single getline-then-dispatch loop cannot
+    // see a `notifications/cancelled` that arrives while it is blocked inside a long
+    // `run` -- it is not reading stdin again until that call returns. So a separate
+    // thread does nothing but read and parse lines, forever, and hands them to the loop
+    // below over a queue -- except `notifications/cancelled`, which it acts on
+    // immediately against the in-flight request's id instead of queuing, since queuing it
+    // would defeat the entire point: it would just wait behind the very call it is meant
+    // to interrupt. The reader thread never touches the Machine -- that is the line this
+    // split rests on, and a tool call's existing single-threaded access to it needs no
+    // change at all. Besides stdin it touches `pending`, `eof`, `currentId` and
+    // `haveCurrentId` under `mu`, and, since #490 gave it `status` to answer, the published
+    // snapshot under `sess.statusMu` and `out` itself through `safeReply` under `outMu`.
+    std::mutex              mu;
+    std::condition_variable cv;
+    std::deque<QueuedMsg>   pending;
+    bool                    eof = false;
+    Json                    currentId;               // the request the worker is running now
+    bool                    haveCurrentId = false;    // false: nothing in flight to cancel
+
+    // #490 gives `out` a second writer -- the reader thread now answers `status` directly
+    // (below), instead of only ever handing lines to the worker. `reply`/`replyError` were
+    // written for a single writer and do not synchronize themselves, so every call from
+    // here on goes through one of these two wrappers instead of the bare functions.
+    std::mutex outMu;
+    auto safeReply = [&](const Json& id, const Json& result) {
+        std::lock_guard<std::mutex> lk(outMu);
+        reply(out, id, result);
+    };
+    auto safeReplyError = [&](const Json& id, int code, const std::string& msg) {
+        std::lock_guard<std::mutex> lk(outMu);
+        replyError(out, id, code, msg);
+    };
+
+    std::thread reader([&] {
+        std::string rline;
+        while (std::getline(in, rline)) {
+            if (rline.empty()) continue;
+            QueuedMsg qm;
+            qm.parseOk = Json::parse(rline, qm.req, qm.parseErr);
+            if (qm.parseOk && qm.req.at("method").str() == "notifications/cancelled") {
+                std::lock_guard<std::mutex> lk(mu);
+                const Json& target = qm.req.at("params").at("requestId");
+                if (haveCurrentId && !target.isNull() && target.dump() == currentId.dump())
+                    Debugger::requestStop();
+                continue;  // acted on immediately -- never queued, never replied to
+            }
+            // #490: `status` MUST answer even while the worker is stuck inside a wedged or
+            // long-running call of ANY kind -- adding it as an ordinary tool would not do
+            // that, since it would just sit in `pending` behind the very call it exists to
+            // report on (deltecent's own point on the issue: guaranteed-non-blocking is a
+            // property of the transport, not the tool). So, like a cancellation, it is
+            // answered HERE: `in_flight` reads `haveCurrentId` (below) under `mu`, and the
+            // rest of the reply comes from the published RunSnapshot under `sess.statusMu`
+            // -- see statusResult(). Deliberately does NOT set `currentId`/`haveCurrentId`
+            // itself: a status call is never in `pending` and never itself the target of a
+            // cancel, so it must stay invisible to that bookkeeping, not just skip it.
+            if (qm.parseOk && qm.req.at("method").str() == "tools/call" &&
+                qm.req.at("params").at("name").str() == "status") {
+                // `statusResult()` is evaluated to a plain Json value HERE, fully, before
+                // `safeReply` is even called -- so `mu`/`statusMu` are both already released
+                // by the time `safeReply` takes `outMu`. Keep it that way: folding this into
+                // `safeReply`'s own body (locking `outMu` first, then calling `statusResult`
+                // inside it) would nest `outMu` around `mu`/`statusMu`, and nothing else in
+                // this file ever takes `outMu` first -- that would be a new, real ordering.
+                safeReply(qm.req.at("id"), statusResult(sess, mu, haveCurrentId));
+                continue;
+            }
+            std::unique_lock<std::mutex> lk(mu);
+            cv.wait(lk, [&] { return pending.size() < kMaxPending; });
+            pending.push_back(std::move(qm));
+            cv.notify_all();
+        }
+        std::lock_guard<std::mutex> lk(mu);
+        eof = true;
+        cv.notify_all();
+    });
+
+    for (;;) {
+        QueuedMsg qm;
+        {
+            std::unique_lock<std::mutex> lk(mu);
+            cv.wait(lk, [&] { return !pending.empty() || eof; });
+            if (pending.empty() && eof) break;
+            qm = std::move(pending.front());
+            pending.pop_front();
+            cv.notify_all();  // room again -- a reader parked on the cap can take the next line
+        }
+
+        if (!qm.parseOk) {
+            safeReplyError(Json(), -32700, "parse error: " + qm.parseErr);
             continue;
         }
+        const Json& req    = qm.req;
         std::string method = req.at("method").str();
-        Json id = req.at("id");
+        Json        id     = req.at("id");
+
+        {
+            // A stale stop request -- a ^C that landed after the previous call already
+            // returned, or while some other tool ran -- must not carry into this request
+            // and kill it on the first slice. Clear it HERE, under the same lock that
+            // publishes the id, and not at the top of the `run` tool: everything between
+            // marking a request in flight and that handler running is a window in which
+            // the reader could match a cancel, call requestStop(), and have the handler
+            // wipe it on the way past. Clearing before the id is visible closes it -- a
+            // cancel that arrives from this point on is for THIS request and survives.
+            std::lock_guard<std::mutex> lk(mu);
+            Debugger::clearStopRequest();
+            currentId     = id;
+            haveCurrentId = true;
+        }
 
         if (method == "initialize") {
             Json r = Json::obj();
@@ -1550,29 +1947,29 @@ int runMcp(Machine& m, std::istream& in, std::ostream& out, const std::string& m
             // commit lives, and an MCP client can run it.
             info["version"] = Json(versionNumber());
             r["serverInfo"] = info;
-            reply(out, id, r);
-            continue;
-        }
-        if (method == "notifications/initialized") continue;
-
-        if (method == "tools/list") {
+            safeReply(id, r);
+        } else if (method == "notifications/initialized") {
+            // no reply -- a notification, not a request
+        } else if (method == "tools/list") {
             Json r = Json::obj();
             r["tools"] = toolList();
-            reply(out, id, r);
-            continue;
-        }
-        if (method == "tools/call") {
+            safeReply(id, r);
+        } else if (method == "tools/call") {
             const Json& params = req.at("params");
             std::string name = params.at("name").str();
-            reply(out, id, callTool(m, sess, name, params.at("arguments")));
-            continue;
+            safeReply(id, callTool(m, sess, name, params.at("arguments")));
+        } else if (method == "ping") {
+            safeReply(id, Json::obj());
+        } else {
+            safeReplyError(id, -32601, "method not found: " + method);
         }
-        if (method == "ping") {
-            reply(out, id, Json::obj());
-            continue;
+
+        {
+            std::lock_guard<std::mutex> lk(mu);
+            haveCurrentId = false;  // done -- a cancel for this id from here on matches nothing
         }
-        replyError(out, id, -32601, "method not found: " + method);
     }
+    reader.join();
     return 0;
 }
 

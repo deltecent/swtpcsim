@@ -44,7 +44,10 @@ reload a whole machine.
 `swtpcsim <machine> --mcp` exposes the machine to an AI assistant as line-delimited JSON-RPC,
 with typed tools for running, stepping, breakpoints, memory and disassembly rather than a text
 prompt to screen-scrape. `--mirror` opens a live socket onto the same console, so a person can
-watch and take over the keyboard.
+watch and take over the keyboard. A `run` that will not end can be stopped with a
+`notifications/cancelled` or a ^C, and a `status` tool answers at once even while a `run` is in
+progress. Every tool checks its arguments, so `"from": "0xE0D0"` is refused with the number to
+send instead of running from 0.
 
 ### The windows
 

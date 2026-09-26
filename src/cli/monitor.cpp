@@ -30,7 +30,6 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
-#include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -1437,32 +1436,12 @@ static void reportStop(const RunResult& r, const Debugger& dbg, std::ostream& ou
 //      twenty times too fast and every timing-dependent thing on the screen --
 //      a cursor, a banner, a Teletype's pace -- would be a lie.
 // ---------------------------------------------------------------------------
+// ^C -- SigintGuard is defined in core/debug.h (shared with the --mcp server,
+// which installs it around the whole of runMcp for the same "no ISIG, no ATTN"
+// reason: its stdin is the JSON-RPC channel, not a keyboard). See there for why.
 // ---------------------------------------------------------------------------
-// ^C.
-//
-// The handler does ONE thing: set a lock-free flag. It does not print, it does
-// not touch the machine, and it does not throw -- those are all undefined in a
-// signal handler, and the bug they produce is a hang or a corrupted heap once in
-// a hundred runs, which is the worst kind there is.
-//
-// It is installed only for the duration of a RUN or a STEP, and the previous
-// handler is put back afterwards, so ^C at the monitor prompt still kills the
-// process exactly as it did before there was a CPU.
-//
-// ON A TERMINAL IT NEVER FIRES, and that is deliberate (Patrick, 2026-07-12): raw
-// mode clears ISIG, because Ctrl-C is a byte CP/M is entitled to read. ATTN is the
-// stop key. This guard is what is left for a PIPED run, where there is no raw mode
-// and no ATTN, and the signal is the only way to stop a program that never ends.
-// ---------------------------------------------------------------------------
-static void onSigint(int) { Debugger::interrupt(); }
 
 namespace {
-struct SigintGuard {
-    void (*prev)(int) = nullptr;
-    SigintGuard() { prev = std::signal(SIGINT, onSigint); }
-    ~SigintGuard() { std::signal(SIGINT, prev); }
-};
-
 // The opcodes NEXT steps OVER instead of into: a subroutine call leaves a return
 // address to stop at, so NEXT runs to it. On the 6800 the calls are JSR (extended
 // BD, indexed AD) and BSR (relative 8D) -- each stacks the address of the following
@@ -1643,6 +1622,10 @@ void Monitor::runMachine(std::ostream& out, bool stepOver) {
     // ^C still stops a PIPED run, because there raw mode never happened and the
     // signal is all there is. On a terminal ISIG is off and this never fires --
     // which is the point: the guest gets that byte.
+    //
+    // A ^C from before this RUN must not stop it, so the flag is cleared ONCE, here,
+    // before the guard can set it -- and NOT by every slice below (see there).
+    Debugger::clearStopRequest();
     SigintGuard guard;
 
     // Whose screen this is. Pushed at the start of every run rather than wired once,
@@ -1679,6 +1662,15 @@ void Monitor::runMachine(std::ostream& out, bool stepOver) {
     clk::time_point idleSince{};
 
     for (;;) {
+        // A ^C THAT LANDED BETWEEN SLICES -- in the throttle's sleep, the pump, the
+        // keyboard poll -- is caught here. Each slice used to clear the flag on entry,
+        // which erased exactly those: a paced RUN (clock_hz set, a live wire) lost 54 of
+        // 100 ^Cs on Windows and 92 of 100 on macOS, and a flat-out one 7 in 1000.
+        if (Debugger::stopRequested()) {
+            r.why = StopReason::StopRequested;
+            break;
+        }
+
         // What the guest did with its slice: did it SAY anything, did it RECEIVE
         // anything, and how often did it come to the keyboard and find nothing there.
         // Those three are the whole of the idle judgement at the bottom of the loop.
@@ -1689,7 +1681,11 @@ void Monitor::runMachine(std::ostream& out, bool stepOver) {
         // A slice, then a look around. Short enough that ATTN feels instant and a
         // keystroke is picked up promptly; long enough that the per-slice overhead
         // is noise.
-        r = m_.debug.run(2000);
+        //
+        // KEEP A PENDING STOP REQUEST (the `false`): one can also land between the check at
+        // the top of this loop and here, and clearing it on entry would erase it unseen.
+        // It was cleared once already, at the start of this RUN.
+        r = m_.debug.run(2000, false);
 
         // Every board with a line on it gets its slice of wall time, console or no
         // console: a 2SIO wired to a socket is still moving bytes when nobody is
@@ -1935,7 +1931,7 @@ void Monitor::runMachine(std::ostream& out, bool stepOver) {
     if (anyConsole) out << "\n";  // the guest was mid-line; do not print on top of it
 
     // EVERY STOP SAYS WHY, and there is now exactly one path that says it. This
-    // used to guess -- `Interrupted && anyConsole` meant "probably ATTN" -- and a
+    // used to guess -- `StopRequested && anyConsole` meant "probably ATTN" -- and a
     // guess is what you write when the reason was never carried. Now it is: ATTN,
     // a script's input running out, and a real ^C are three different words.
     //
@@ -1999,13 +1995,18 @@ void Monitor::showConsole(std::ostream& out) {
         << ")\n";
     showProps(con.properties(), out);
 
+    // A unit holds the console when it is wired to it -- or, under --mcp, when its line is
+    // the console's stand-in: a filter that follows the console's transforms (issue #529).
     std::string holder;
     for (const auto& b : m_.boards())
-        for (const auto& u : b->units())
-            if (u.kind == UnitKind::Serial && u.state == "console") {
-                if (!holder.empty()) holder += ", ";
-                holder += b->id + ":" + u.name;
-            }
+        for (const auto& u : b->units()) {
+            if (u.kind != UnitKind::Serial) continue;
+            const auto* f       = dynamic_cast<const FilterStream*>(b->unitStream(u.name));
+            const bool  standIn = f && f->follows(con.filter());
+            if (u.state != "console" && !standIn) continue;
+            if (!holder.empty()) holder += ", ";
+            holder += b->id + ":" + u.name + (standIn ? " (--mcp)" : "");
+        }
     out << "\n  held by  " << (holder.empty() ? "(nobody -- CONNECT <id>:<unit> console)" : holder)
         << "\n";
     out << "\n  The transforms (UPPER, STRIP7OUT, CRLF, BSDEL...) are the CONSOLE's, and\n"
@@ -2493,7 +2494,7 @@ static void reportStop(const RunResult& r, const Debugger& dbg, std::ostream& ou
                       "input ended -- the machine is still at %s. RUN resumes.", fmtWord(r.pc).c_str());
         out << buf << "\n";
         break;
-    case StopReason::Interrupted:
+    case StopReason::StopRequested:
         out << "^C -- stopped at the instruction boundary. The machine is intact.\n";
         break;
     case StopReason::WindowClosed:
