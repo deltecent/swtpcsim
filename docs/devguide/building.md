@@ -121,6 +121,13 @@ build and pass the suite. The Windows platform layer, once merely written, is fi
 Linux, macOS, and Windows are each a required check — so a regression on any of them shows up
 before it merges. The tests still run locally the same way, when someone types `ctest`.
 
+**A merge does not rebuild what its PR already tested.** Merging an up-to-date PR makes a commit
+whose files are identical to the PR head CI just passed, so the run on `master` skips the build
+and is green with nothing to download. When the merge did bring in something new — PDFs the
+docs bot committed while the PR was open, a resolved conflict — only that difference is judged,
+so a PDF-only difference runs the single documentation leg. For the binaries of a merged
+change, fetch them from its PR.
+
 Each of those jobs uploads the binary it built, so a green run leaves three executables on
 GitHub — including the two you cannot produce on your own machine. To fetch them:
 

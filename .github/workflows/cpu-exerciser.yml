@@ -42,8 +42,30 @@ on:
       - '.github/workflows/cpu-exerciser.yml'
   workflow_dispatch:
 
+# The merge of an up-to-date PR changes no files, and the PR already ran the exercisers on
+# those exact bytes -- so the `tested` gate below skips them (altairsim issue #543, and ci.yml, which
+# does the same). A newer push to a PR cancels the older run; master runs are per-commit.
+concurrency:
+  group: cpu-exerciser-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
+  tested:
+    name: Already tested?
+    runs-on: ubuntu-latest
+    outputs:
+      tested: ${{ steps.check.outputs.tested }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0            # needs the merge's second parent present
+      - id: check
+        shell: bash
+        run: echo "tested=$(bash tools/ci-merge-already-tested.sh '${{ github.event_name }}')" >> "$GITHUB_OUTPUT"
+
   exerciser:
+    needs: tested
+    if: needs.tested.outputs.tested != 'true'
     name: CPU exercisers (slow)
     runs-on: ubuntu-latest
     # Share ci.yml's compiler cache. The run's cost is the billions of instructions, not the

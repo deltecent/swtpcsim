@@ -983,10 +983,10 @@ void test_cli() {
     SECTION("cli: SHOW BOARD lists a property's legal values under its help");
     {
         auto show = [](const char* type) {
-            Machine            m;
-            Monitor            mon(m);
+            Machine            sm;
+            Monitor            smon(sm);
             std::ostringstream o;
-            mon.exec(std::string("SHOW BOARD ") + type, o);
+            smon.exec(std::string("SHOW BOARD ") + type, o);
             return o.str();
         };
 
@@ -1628,9 +1628,9 @@ void test_cli() {
     SECTION("CONFIG SAVE -- a value with a '\"' in it saves and loads back (#538)");
     {
         auto roundTrips = [](const std::string& want) {
-            Machine m;
-            m.name           = want;
-            std::string text = saveTomlText(m);
+            Machine qm;
+            qm.name          = want;
+            std::string text = saveTomlText(qm);
             Machine     back;
             std::string err;
             return loadTomlText(text, "quote (saved)", back, err) && back.name == want;
