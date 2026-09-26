@@ -1546,6 +1546,21 @@ struct QueuedMsg {
     Json        req;
 };
 
+// HOW DEEP THE QUEUE MAY GET before the reader stops taking more on. A client that
+// pipelines faster than the guest can execute -- or one that talks to a server parked
+// in a long `run` -- would otherwise grow this without limit, and the memory it costs
+// is the client's to spend and ours to pay. At the cap the reader simply stops reading
+// stdin until the worker has drained one; the kernel's pipe buffer takes up the slack
+// and the client blocks on its own write, which is what backpressure is supposed to
+// feel like. Nothing is dropped and nothing is answered out of order.
+//
+// The cap is generous on purpose: a cancellation is acted on in the reader BEFORE the
+// queue is touched, so it overtakes anything waiting -- but only if the reader is still
+// reading. Parking it is therefore the one thing that can delay a cancel, and it takes
+// this many un-drained requests to get there, which a client driving a guest will never
+// do by accident.
+constexpr size_t kMaxPending = 4096;
+
 } // namespace
 
 int runMcp(Machine& m, std::istream& in, std::ostream& out, const std::string& mirror) {
@@ -1600,13 +1615,14 @@ int runMcp(Machine& m, std::istream& in, std::ostream& out, const std::string& m
                     Debugger::interrupt();
                 continue;  // acted on immediately -- never queued, never replied to
             }
-            std::lock_guard<std::mutex> lk(mu);
+            std::unique_lock<std::mutex> lk(mu);
+            cv.wait(lk, [&] { return pending.size() < kMaxPending; });
             pending.push_back(std::move(qm));
-            cv.notify_one();
+            cv.notify_all();
         }
         std::lock_guard<std::mutex> lk(mu);
         eof = true;
-        cv.notify_one();
+        cv.notify_all();
     });
 
     for (;;) {
@@ -1617,6 +1633,7 @@ int runMcp(Machine& m, std::istream& in, std::ostream& out, const std::string& m
             if (pending.empty() && eof) break;
             qm = std::move(pending.front());
             pending.pop_front();
+            cv.notify_all();  // room again -- a reader parked on the cap can take the next line
         }
 
         if (!qm.parseOk) {
