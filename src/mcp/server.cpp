@@ -962,12 +962,6 @@ Json callTool(Machine& m, McpSession& sess, const std::string& name, const Json&
         CpuCore* cpu = m.cpu();
         if (!cpu) return textResult("no CPU in this machine", true);
 
-        // A ^C between calls (after the previous one already returned, or one that
-        // landed while some other tool was running) must not carry into THIS call and
-        // kill it on the first slice -- only a ^C that arrives WHILE this run is in
-        // flight should stop it. Clear before doing anything else.
-        Debugger::clearInterrupt();
-
         if (args.has("from")) cpu->setPc((uint16_t)args.at("from").integer());
         if (args.has("input")) con->feed(args.at("input").str());
 
@@ -1634,7 +1628,16 @@ int runMcp(Machine& m, std::istream& in, std::ostream& out, const std::string& m
         Json        id     = req.at("id");
 
         {
+            // A stale interrupt -- a ^C that landed after the previous call already
+            // returned, or while some other tool ran -- must not carry into this request
+            // and kill it on the first slice. Clear it HERE, under the same lock that
+            // publishes the id, and not at the top of the `run` tool: everything between
+            // marking a request in flight and that handler running is a window in which
+            // the reader could match a cancel, call interrupt(), and have the handler
+            // wipe it on the way past. Clearing before the id is visible closes it -- a
+            // cancel that arrives from this point on is for THIS request and survives.
             std::lock_guard<std::mutex> lk(mu);
+            Debugger::clearInterrupt();
             currentId     = id;
             haveCurrentId = true;
         }
