@@ -1557,6 +1557,84 @@ void test_cli() {
         CHECK(sm.startup.empty(), "...and it removes nothing");
         CHECK(smon.failed(), "...and it trips failed()");
     }
+
+    // ---------------------------------------------------------------------
+    // CONFIG SAVE: a text value holding a '"' (issue #538)
+    // ---------------------------------------------------------------------
+    // A single string value resolves no escapes, so a '"' was written raw -- and a '#' after
+    // it started a comment, cutting the value short: `mount = "odd"name#1.dsk"` saved fine
+    // and would not load. A value with a '"' is now written '...', and one holding BOTH
+    // quote characters is refused rather than written into a file that will not load.
+    SECTION("CONFIG SAVE -- a value with a '\"' in it saves and loads back (#538)");
+    {
+        auto roundTrips = [](const std::string& want) {
+            Machine m;
+            m.name           = want;
+            std::string text = saveTomlText(m);
+            Machine     back;
+            std::string err;
+            return loadTomlText(text, "quote (saved)", back, err) && back.name == want;
+        };
+        CHECK(roundTrips("odd\"name#1"), "a '\"' followed by a '#' survives the round trip");
+        CHECK(roundTrips("it's #1"), "...and so does a ' with a '#' after it");
+        CHECK(roundTrips("say \"hi\" #1"),
+              "...and a PAIR of '\"' before the '#' -- the reader has to know it is inside "
+              "'...', or the second '\"' reads as the string's end and the '#' cuts the line");
+
+        Machine plain;
+        plain.name = "my #1 C:\\box";
+        CHECK(saveTomlText(plain).find("name     = \"my #1 C:\\box\"\n") != std::string::npos,
+              "a value with no '\"' is written double-quoted exactly as before");
+
+        namespace fs = std::filesystem;
+        const fs::path dir = fs::temp_directory_path() / "swtpcsim-quotetest";
+        std::error_code ec;
+        fs::create_directories(dir, ec);
+        const std::string cfg = (dir / "both.toml").generic_string();
+        {
+            std::ofstream f(cfg);
+            f << "keep\n";
+        }
+        Machine both;
+        both.name = "a'b\"c";
+        std::string err;
+        CHECK(!saveToml(cfg, both, err), "a value holding both ' and '\"' is refused");
+        CHECK(err.find("machine name") != std::string::npos, "...and the message names it");
+        std::ifstream kept(cfg);
+        std::string   line;
+        std::getline(kept, line);
+        CHECK(line == "keep", "...and the file already there is left untouched");
+
+        // The issue's own repro, through MOUNT and CONFIG SAVE: a disk image whose name holds
+        // '"' and '#'. The disk is a MemoryMedia -- Windows forbids '"' in a real filename,
+        // and the bug is in the writer and the reader, not the host's filesystem.
+        setMediaResolver([](const std::string& path, bool ro, std::string&) {
+            return std::make_unique<MemoryMedia>(path, std::vector<uint8_t>(35 * 10 * 256), ro);
+        });
+        const std::string save = (dir / "q.toml").generic_string();
+
+        Machine dm;
+        std::string derr;
+        CHECK(loadTomlText("[machine]\nname = \"q\"\nbase = \"swtpc\"\n", "q", dm, derr),
+              "the swtpc machine loads");
+        Monitor            dmon(dm);
+        std::ostringstream o;
+        dmon.exec("MOUNT dc40:drive1 " + (dir / "odd\"name#1.dsk").generic_string(), o);
+        dmon.exec("CONFIG SAVE " + save, o);
+        CHECK(!dmon.failed(), ("MOUNT and CONFIG SAVE succeed: " + o.str()).c_str());
+
+        Machine     back;
+        std::string berr;
+        CHECK(loadToml(save, back, berr), ("the saved file loads back: " + berr).c_str());
+        Monitor            bmon(back);
+        std::ostringstream shown;
+        bmon.exec("SHOW MOUNTS", shown);
+        CHECK(shown.str().find("odd\"name#1.dsk") != std::string::npos,
+              "...with the disk mounted under its whole name");
+        setMediaResolver(openHostFile);
+        fs::remove(save, ec);
+        fs::remove(cfg, ec);
+    }
 }
 
 // ---------------------------------------------------------------------------

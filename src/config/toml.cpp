@@ -58,9 +58,14 @@ struct Table {
 // of being dropped on the floor its text is captured into `notes`, in file order, one
 // entry per `#>` line. `#>` alone is a blank line; a single leading space after the `>`
 // is eaten so `#> text` reads as `text`. An ordinary `#` is discarded exactly as before.
+//
+// A SINGLE-QUOTED (literal) string is honored too, and it has no escapes at all: inside
+// '...' a '"', a '\' or a '#' is just text. That is how CONFIG SAVE writes a value that
+// holds a '"' (issue #538) -- the double-quoted form resolves no escapes in a single value,
+// so a raw '"' in it would end the string here and let a later '#' cut the line.
 std::string stripComment(const std::string& line, std::vector<std::string>* notes) {
     std::string s;
-    bool q = false, esc = false;
+    bool q = false, lit = false, esc = false;
     for (size_t i = 0; i < line.size(); ++i) {
         char c = line[i];
         if (esc) {
@@ -73,8 +78,9 @@ std::string stripComment(const std::string& line, std::vector<std::string>* note
             esc = true;
             continue;
         }
-        if (c == '"') q = !q;
-        if (c == '#' && !q) {
+        if (c == '"' && !lit) q = !q;
+        if (c == '\'' && !q) lit = !lit;
+        if (c == '#' && !q && !lit) {
             if (notes && i + 1 < line.size() && line[i + 1] == '>') {
                 std::string note = line.substr(i + 2);
                 if (!note.empty() && note.back() == '\r') note.pop_back();  // a CRLF file
@@ -694,13 +700,37 @@ bool loadToml(const std::string& path, Machine& m, std::string& err,
     return loadTomlText(ss.str(), path, m, err, notes);
 }
 
+// A text value, quoted so the reader gets back exactly these bytes (issue #538).
+//
+// A double-quoted single value resolves NO escapes -- existing machine files write Windows
+// paths as "C:\disks\x.dsk" with single backslashes, and they must keep loading -- so a
+// '"' cannot be escaped into one. A value holding a '"' is written as a TOML literal string,
+// '...', which has no escapes to need. A value holding BOTH quote characters has no form
+// this reader takes back, so it is refused (`what` names it) instead of written wrong.
+// Everything else is double-quoted exactly as before, so an ordinary save is unchanged.
+static std::string tomlString(const std::string& text, const std::string& what,
+                              std::string* err) {
+    if (text.find('"') == std::string::npos) return "\"" + text + "\"";
+    if (text.find('\'') == std::string::npos) return "'" + text + "'";
+    if (err && err->empty())
+        *err = what + ": a value with both ' and \" in it cannot be saved";
+    return "\"\"";
+}
+
 bool saveToml(const std::string& path, Machine& m, std::string& err) {
+    // Build the text FIRST: a refused save must not have truncated the file already there.
+    std::string why;
+    std::string text = saveTomlText(m, &why);
+    if (!why.empty()) {
+        err = why;
+        return false;
+    }
     std::ofstream f(path);
     if (!f) {
         err = "cannot write '" + path + "'";
         return false;
     }
-    f << saveTomlText(m);
+    f << text;
     return true;
 }
 
@@ -712,10 +742,12 @@ bool saveToml(const std::string& path, Machine& m, std::string& err) {
 // [board.unit.<name>] tables that the loader then REFUSED, so every machine with a
 // cassette or a disk in it saved to a file that would not load. The two halves are both
 // generic now, and this is what keeps them that way.
-std::string saveTomlText(Machine& m) {
+std::string saveTomlText(Machine& m) { return saveTomlText(m, nullptr); }
+
+std::string saveTomlText(Machine& m, std::string* err) {
     std::ostringstream f;
     f << "[machine]\n";
-    f << "name     = \"" << m.name << "\"\n";
+    f << "name     = " << tomlString(m.name, "machine name", err) << "\n";
     // No clock_hz here, and no sense either. Both are BOARD properties -- the crystal
     // is on the CPU card and the switches are on the front panel -- so both are
     // written out by the same generic properties() walk that writes every other
@@ -757,8 +789,8 @@ std::string saveTomlText(Machine& m) {
 
     for (const auto& b : m.boards()) {
         f << "\n[[board]]\n";
-        f << "type = \"" << b->type() << "\"\n";
-        f << "id   = \"" << b->id << "\"\n";
+        f << "type = " << tomlString(b->type(), b->id + " type", err) << "\n";
+        f << "id   = " << tomlString(b->id, b->id + " id", err) << "\n";
         // Straight out of properties() -- the same list SHOW prints and SET
         // writes. Round-trip is therefore structural, not something we maintain.
         //
@@ -782,7 +814,8 @@ std::string saveTomlText(Machine& m) {
             if (!p.set) continue;
             Value v = p.get();
             if (p.kind == Kind::Str || p.kind == Kind::Enum)
-                f << p.name << " = \"" << v.text(p.radix) << "\"\n";
+                f << p.name << " = " << tomlString(v.text(p.radix), b->id + " " + p.name, err)
+                  << "\n";
             else
                 f << p.name << " = " << v.text(p.radix) << "\n";
         }
@@ -805,7 +838,9 @@ std::string saveTomlText(Machine& m) {
                 if (!p.set) continue;
                 Value v = p.get();
                 if (p.kind == Kind::Str || p.kind == Kind::Enum)
-                    f << "  " << p.name << " = \"" << v.text(p.radix) << "\"\n";
+                    f << "  " << p.name << " = "
+                      << tomlString(v.text(p.radix), b->id + ":" + u.name + " " + p.name, err)
+                      << "\n";
                 else
                     f << "  " << p.name << " = " << v.text(p.radix) << "\n";
             }
@@ -822,7 +857,9 @@ std::string saveTomlText(Machine& m) {
             f << "\n  [[board." << su.table << "]]\n";
             for (const auto& fl : su.fields)
                 f << "  " << fl.key << " = "
-                  << (fl.quoted ? "\"" + fl.text + "\"" : fl.text) << "\n";
+                  << (fl.quoted ? tomlString(fl.text, b->id + " " + su.table + " " + fl.key, err)
+                                : fl.text)
+                  << "\n";
         }
     }
     return f.str();
