@@ -110,7 +110,8 @@ to success if you are only checking for the word "error".
 adds `-Werror` on GCC/Clang and `/WX` on MSVC, so a warning on any of them reds a PR before
 merge. It is off by default locally; reproduce the gate before pushing a code change with
 `cmake -B build -DWERROR=on && cmake --build build -j`. GCC/Clang run `-Wall -Wextra -Wpedantic
--Wshadow`; MSVC runs `/W4` with two intentional classes suppressed tree-wide (`/wd4244 /wd4267`,
+-Wshadow` (plus `-Wshadow-uncaptured-local` on Clang, so a Mac build catches the lambda-local
+shadowing GCC flags); MSVC runs `/W4` with two intentional classes suppressed tree-wide (`/wd4244 /wd4267`,
 the 8-bit emulator's integer narrowing — issue #238 closed that backlog). Because macOS is the
 only leg that builds SDL3 and MSVC skips it, a warning in SDL-guarded code only reds macOS.
 

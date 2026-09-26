@@ -19,7 +19,11 @@ endif()
 #
 #   * Variable shadowing (MSVC C4456/C4457) is FIXED at the source -- the shadowing locals
 #     were renamed. -Wshadow on GCC/Clang keeps the class from creeping back on every CI leg,
-#     not just on Windows.
+#     not just on Windows. The two do not flag the same set: GCC's -Wshadow reports a local
+#     declared inside a lambda that hides a local of the enclosing function even when the
+#     lambda does not capture it; Clang keeps that case in -Wshadow-uncaptured-local. Without
+#     that flag a Mac build passes code that reds the Linux leg (issue #548), so Clang gets it
+#     too. GCC rejects the flag as unknown, hence Clang only.
 #   * Integer narrowing (MSVC C4244/C4267 -- uint32->uint8/16, size_t->uint32) is SUPPRESSED
 #     tree-wide with /wd4244 /wd4267. It is the daily bread of an 8-bit emulator's byte/word
 #     masking; GCC/Clang do not flag it at -Wall -Wextra either (only -Wconversion would), so
@@ -39,6 +43,9 @@ if(MSVC)
   endif()
 else()
   add_compile_options(-Wall -Wextra -Wpedantic -Wshadow)
+  if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    add_compile_options(-Wshadow-uncaptured-local)
+  endif()
   if(WERROR)
     add_compile_options(-Werror)
   endif()
