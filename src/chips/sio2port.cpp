@@ -37,7 +37,10 @@ Sio2Port::~Sio2Port() {
     // The queue is holding a lambda with `this` inside it. A card can be pulled out of a
     // RUNNING machine, and a deadline that fires into a destroyed section is a
     // use-after-free with a two-week fuse on it.
-    if (clock_) clock_->cancel(wake_);
+    if (clock_) {
+        clock_->cancel(wake_);
+        clock_->unwatch(&clock_);
+    }
 }
 
 // Channel n owns BASE+offset (control/status, even) and BASE+offset+1 (data, odd).

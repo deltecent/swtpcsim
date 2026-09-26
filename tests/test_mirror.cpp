@@ -281,14 +281,21 @@ void test_mirror() {
 
         auto mirror = resolveEndpoint("scripted|socket:" + std::to_string(port), err);
         CHECK(mirror != nullptr, ("scripted|socket:PORT binds a real listener: " + err).c_str());
-        if (mirror && port) {
+        auto* ms = dynamic_cast<MirrorStream*>(mirror.get());
+        if (mirror && port) CHECK(ms && !ms->watching(), "nobody has dialed in yet: no watcher");
+        if (ms && port) {
             auto client = platform::connectTcp("127.0.0.1", port, err);
             CHECK(client != nullptr, ("a watcher dials in: " + err).c_str());
 
+            // Wait for BOTH ends. The client reporting connected is not enough: the kernel
+            // completes the handshake into the listen backlog, so connect() can finish
+            // before pump() has accept()ed -- and until it has, the mirror has no watcher
+            // and drops guest output BY DESIGN (a late watcher gets no backlog). Sending
+            // BANNER in that window lost it: 27 of 40 runs on a fast Windows box.
             bool up = waitFor([&] {
                 mirror->pump();  // answer the phone
                 if (client) client->poll();
-                return client && client->established();
+                return client && client->established() && ms->watching();
             });
             CHECK(up, "the watcher connects and the mirror accepts it");
 

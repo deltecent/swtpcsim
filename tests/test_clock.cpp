@@ -17,13 +17,32 @@
 //   3. NOTHING FIRES EARLY, and everything due inside one instruction fires at
 //      that instruction's boundary. Emulated time is the only clock there is.
 
+#include "boards/swtpc-mps.h"
+#include "core/board.h"
 #include "core/clock.h"
+#include "core/statefile.h"
 #include "test.h"
 
 #include <string>
 #include <vector>
 
 using namespace swtpc;
+
+namespace {
+
+// A board with a deadline pending, cancelled in its destructor -- the shape of every UART.
+struct WakingBoard : Board {
+    Clock::Handle wake = Clock::kNone;
+    bool* fired;
+    explicit WakingBoard(bool* f) : fired(f) {}
+    std::string type() const override { return "waking"; }
+    std::vector<Property> properties() override { return {}; }
+    void clockAttached() override { wake = clock_->after(100, [this] { *fired = true; }); }
+    ~WakingBoard() override { if (clock_) clock_->cancel(wake); }
+    Clock* clock() const { return clock_; }
+};
+
+} // namespace
 
 void test_clock() {
     SECTION("Clock -- time, and the queue of things that will happen in it");
@@ -237,5 +256,64 @@ void test_clock() {
         c.setHz(4000000);
         CHECK(!c.idle(), "and a crystal cannot turn it back on behind the operator's back");
         CHECK(c.free() == false && c.hz() == 4000000, "the crystal still works, untouched");
+    }
+
+    // A BOARD MAY OUTLIVE ITS CLOCK. A Machine declares its clock first, so there the clock
+    // always dies last; a board built by hand has no such guarantee, and its destructor cancels
+    // through the clock. The clock nulls every pointer registered with it on the way out, so
+    // the order the two are declared in does not matter. Under -DSANITIZE=on, dropping that
+    // makes each block below a use-after-scope.
+    {
+        bool fired = false;
+        WakingBoard b(&fired);          // declared FIRST, so it dies LAST
+        {
+            Clock c;
+            b.attachClock(&c);
+            CHECK(b.clock() == &c, "attached");
+        }
+        CHECK(b.clock() == nullptr, "the dying clock nulled the board's pointer");
+        CHECK(!fired, "and its pending wake died with it, unfired");
+    }
+    {
+        bool fired = false;
+        WakingBoard b(&fired);
+        Clock c1, c2;
+        b.attachClock(&c1);
+        b.attachClock(&c2);             // re-attached, as replaceWith() does
+        CHECK(b.clock() == &c2, "re-attached to the second clock");
+    }   // c2, c1, then b: c1 must not reach back into b, it was unwatched on re-attach
+    {
+        MpsBoard b;                     // the chip-level pointer too (Sio2Port holds its own)
+        Clock c;
+        b.attachClock(&c);
+    }   // c dies first; ~Sio2Port must not cancel through it
+    CHECK(true, "an MP-S declared before its clock is destroyed cleanly");
+
+    // A HANDLE IS NEVER ISSUED TWICE -- not by another clock, and not after a RESTORE. A
+    // board cancels its old handle before re-arming, and that old handle may have come from
+    // somewhere else: the scratch machine a file was built in (replaceWith()), or the run
+    // between a SNAPSHOT and its RESTORE. If the number had been issued again, the cancel
+    // would kill somebody else's deadline.
+    {
+        Clock scratch, live;
+        Clock::Handle old = scratch.after(10, [] {});   // armed while the file was built
+        bool fired = false;
+        live.after(10, [&] { fired = true; });          // another board, already moved
+        live.cancel(old);                               // the moved board re-arms
+        live.advance(20);
+        CHECK(fired, "a handle from another clock cancels nothing on this one");
+    }
+    {
+        Clock c;
+        StateWriter w;
+        c.serialize(w);                                 // SNAPSHOT
+        Clock::Handle stale = c.after(10, [] {});       // board B arms, after the snapshot
+        StateReader r(w.data());
+        c.deserialize(r);                               // RESTORE
+        bool fired = false;
+        c.after(10, [&] { fired = true; });             // board A re-arms first...
+        c.cancel(stale);                                // ...then B cancels its old one
+        c.advance(20);
+        CHECK(fired, "after a RESTORE, a handle from before it cancels nothing new");
     }
 }

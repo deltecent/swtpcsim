@@ -3,15 +3,34 @@
 #include "core/statefile.h"
 
 #include <algorithm>
+#include <atomic>
 
 namespace swtpc {
 
+// One counter for every clock in the process -- see Handle in the header. Pre-incremented,
+// so kNone (0) is never issued. The machine is single-threaded; the atomic only makes that
+// not a precondition of a number's uniqueness.
+static std::atomic<Clock::Handle> nextHandle{0};
+
 Clock::Handle Clock::at(uint64_t when, std::function<void()> fn) {
-    Handle h = ++next_;  // never 0, and never reused
+    Handle h = nextHandle.fetch_add(1, std::memory_order_relaxed) + 1;
     live_.emplace(h, std::move(fn));
     heap_.push_back(Item{when, h});
     std::push_heap(heap_.begin(), heap_.end(), std::greater<Item>());
     return h;
+}
+
+Clock::~Clock() {
+    for (Clock** p : watchers_) *p = nullptr;
+}
+
+void Clock::watch(Clock** p) {
+    if (std::find(watchers_.begin(), watchers_.end(), p) == watchers_.end())
+        watchers_.push_back(p);
+}
+
+void Clock::unwatch(Clock** p) {
+    watchers_.erase(std::remove(watchers_.begin(), watchers_.end(), p), watchers_.end());
 }
 
 void Clock::cancel(Handle h) {
@@ -71,13 +90,11 @@ void Clock::power() {
     t_ = 0;
     heap_.clear();
     live_.clear();
-    // next_ is NOT reset. See the header: a board still holding a handle from the
-    // machine's last life must not be able to cancel an event in this one.
 }
 
 void Clock::serialize(StateWriter& w) const {
     w.u64(t_);
-    w.u64(next_);
+    w.u64(nextHandle.load(std::memory_order_relaxed));
 }
 
 void Clock::deserialize(StateReader& r) {
@@ -91,7 +108,11 @@ void Clock::deserialize(StateReader& r) {
     heap_.clear();
     live_.clear();
     t_    = r.u64();
-    next_ = r.u64();
+    // Forward only. Moving it back would re-issue numbers handed out since the snapshot,
+    // which a board may still hold and is about to cancel.
+    Handle saved = r.u64();
+    Handle cur   = nextHandle.load(std::memory_order_relaxed);
+    while (saved > cur && !nextHandle.compare_exchange_weak(cur, saved)) {}
 }
 
 } // namespace swtpc

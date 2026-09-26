@@ -283,7 +283,8 @@ static const std::vector<CommandDef> kCommands = {
      "It runs against whatever machine is loaded, so a DO file usually opens with MACHINE\n"
      "to pick its own base -- `MACHINE swtpc` then MOUNT/RUN, or `MACHINE none` then\n"
      "BOARDS ADD to build one from scratch. On the command line, `swtpcsim -s FILE` runs\n"
-     "the same file at startup and exits with its status.\n"
+     "the same file at startup and exits with its status. FILE is named from where you\n"
+     "launched, and the paths in it are relative to it, as in a DO file.\n"
      "\n"
      "It is a LINE RUNNER, not a full scripting language: no arguments, no IF or GOTO.\n"
      "For conditional or interactive automation, drive a live guest over --mcp.\n"
@@ -543,8 +544,9 @@ static const std::vector<CommandDef> kCommands = {
     // -- which nothing else wanted -- and it gets out of DISASM's way, which drops
     // to DI now that the D-cluster is one shorter.
     {"UNMOUNT", true, nullptr, "UNMOUNT <id>:<u>",  // U
-     "The socket is then EMPTY -- those pages float to FF, exactly as a card with\n"
-     "no chip in it does.\n"
+     "Takes the disk, tape or ROM out of the unit. A drive or a tape recorder is then\n"
+     "empty. A ROM socket is then empty too: those pages float to FF, as on a board\n"
+     "with no chip in the socket.\n"
      "  U dc40:drive0"},
     {"DISCONNECT", true, nullptr, "DISCONNECT <id>:<u>",  // DISC
      "The line then goes nowhere. NOT an error: an unconnected 6850 sits there with\n"

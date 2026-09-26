@@ -843,7 +843,8 @@ lines and `;` or `#` comments are skipped, so a DO file reads like a script.
 It runs against whatever machine is loaded, so a DO file usually opens with MACHINE
 to pick its own base -- `MACHINE swtpc` then MOUNT/RUN, or `MACHINE none` then
 BOARDS ADD to build one from scratch. On the command line, `swtpcsim -s FILE` runs
-the same file at startup and exits with its status.
+the same file at startup and exits with its status. FILE is named from where you
+launched, and the paths in it are relative to it, as in a DO file.
 
 It is a LINE RUNNER, not a full scripting language: no arguments, no IF or GOTO.
 For conditional or interactive automation, drive a live guest over --mcp.
@@ -1051,8 +1052,9 @@ STA ADD RUN FF00
 ```
 UNMOUNT <id>:<u>
 ```
-The socket is then EMPTY -- those pages float to FF, exactly as a card with
-no chip in it does.
+Takes the disk, tape or ROM out of the unit. A drive or a tape recorder is then
+empty. A ROM socket is then empty too: those pages float to FF, as on a board
+with no chip in the socket.
 
 ```
 U dc40:drive0

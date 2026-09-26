@@ -44,4 +44,9 @@ bool saveToml(const std::string& path, Machine& m, std::string& err);
 // reader has to be generic over exactly the same pair or a saved machine will not load.
 std::string saveTomlText(Machine& m);
 
+// ...and the same, reporting a value it could not write. A text value holding BOTH ' and "
+// has no form the reader takes back (issue #538); the first such value is named in `*err`,
+// and saveToml() refuses rather than write a file that will not load.
+std::string saveTomlText(Machine& m, std::string* err);
+
 } // namespace swtpc

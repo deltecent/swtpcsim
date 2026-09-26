@@ -62,9 +62,20 @@ class StateReader;
 
 class Clock {
 public:
+    Clock() = default;
+    ~Clock();
+    // Not copyable: the watchers below hold the address of THIS clock.
+    Clock(const Clock&)            = delete;
+    Clock& operator=(const Clock&) = delete;
+
     // A scheduled thing, cancellable. AN INTEGER AND NOT A POINTER, on purpose:
     // a handle that outlives its event is then merely stale, and cancelling it is
-    // a no-op instead of a use-after-free. Handles are never reused.
+    // a no-op instead of a use-after-free. Handles are never reused -- not by this clock,
+    // not by any other, and not after a RESTORE: one counter serves every clock in the
+    // process. A board can hold a handle from a clock it has left (the scratch machine a
+    // file was built in) or from a run a RESTORE has undone, and it cancels that handle
+    // before it re-arms. Were the number ever issued again, that cancel would kill
+    // somebody else's deadline.
     using Handle = uint64_t;
     static constexpr Handle kNone = 0;
 
@@ -96,6 +107,15 @@ public:
     // Cancelling kNone, or a handle that has already fired, is legal and does
     // nothing. Boards re-arm constantly and should not have to track which.
     void cancel(Handle h);
+
+    // A HOLDER OF A `Clock*` REGISTERS THE POINTER, AND THE CLOCK NULLS IT ON THE WAY OUT.
+    // A board's destructor cancels its pending wake -- the lambda has `this` in it -- so it
+    // needs the clock alive, or knowing that it is not. A Machine declares its clock first,
+    // so the clock always outlives the boards; anything built by hand (a test) may not. With
+    // this, destruction order is simply not a question: the pointer is either valid or null.
+    // unwatch() of a pointer never watched is a no-op.
+    void watch(Clock** p);
+    void unwatch(Clock** p);
     bool pending(Handle h) const;
 
     // The crystal on the CPU card. Defaults to the 88-CPU's 2 MHz so that a
@@ -163,9 +183,9 @@ public:
     // which re-arms on every character is not LEAKING one per character.
     size_t queued() const { return live_.size(); }
 
-    // SNAPSHOT/RESTORE (DESIGN.md 13). Only t_ and next_ travel: t_ is emulated
-    // time itself, and next_ keeps handles from a restored board's re-arm from
-    // colliding with a stale number. The QUEUE does NOT travel -- its entries are
+    // SNAPSHOT/RESTORE (DESIGN.md 13). Only t_ travels, and the handle counter: t_ is
+    // emulated time itself; the counter is written so the format stays as it was, and on
+    // restore it may only move FORWARD (see the handle note above). The QUEUE does NOT travel -- its entries are
     // std::function closures (see the header note), and each board re-arms its own
     // deadlines in deserialize() from the state it read. hz_/free_/idle_ are the
     // CPU card's to publish and are already correct in a matching machine, so they
@@ -197,11 +217,12 @@ private:
     // when it surfaces, which is cheaper than finding and removing it now.
     std::unordered_map<Handle, std::function<void()>> live_;
 
-    Handle   next_ = 0;  // ++next_, so kNone (0) is never issued
     uint64_t t_    = 0;
     long long hz_  = 2000000;   // the DIVISOR. Never 0. See setHz().
     bool     free_ = true;      // ...and by default we do not pace against it.
     bool     idle_ = true;      // ...but we DO stand down when the guest is only waiting.
+
+    std::vector<Clock**> watchers_;  // see watch()
 };
 
 } // namespace swtpc

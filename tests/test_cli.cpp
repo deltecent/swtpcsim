@@ -895,6 +895,8 @@ void test_cli() {
     // socket. The socket stays, empty, and keeps its name.
     std::ostringstream um;
     mon3.exec("UNMOUNT mem0:rom0", um);
+    CHECK(um.str().find("the socket is now EMPTY -- those pages float to FF") != std::string::npos,
+          "a ROM socket's UNMOUNT says its pages float");
     std::ostringstream b2;
     mon3.exec("BOARDS", b2);
     CHECK(b2.str().find("rom0(empty)") != std::string::npos, "the socket survives its chip");
@@ -1290,6 +1292,64 @@ void test_cli() {
     }
 
     // -----------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // THE MOUNT AND UNMOUNT MESSAGES SAY WHAT IS TRUE OF THE UNIT (#574, #577).
+    //
+    // The CREATE hint is a command to paste back, so a quoted path must come back with
+    // BOTH its quotes. And UNMOUNT describes the unit it emptied: only a ROM socket has
+    // pages that float to FF -- a drive or a recorder just has nothing in it.
+    // -----------------------------------------------------------------------
+    SECTION("cli: the MOUNT hint and the UNMOUNT message fit what was typed and the unit");
+    {
+        setMediaResolver(openHostFile);
+        const auto dir = std::filesystem::temp_directory_path();
+        const std::string dskPath = (dir / "swtpcsim-574-577.dsk").string();
+        const std::string tapPath = (dir / "swtpcsim-574-577.tap").string();
+        std::error_code ec;
+        std::filesystem::remove(dskPath, ec);
+        std::filesystem::remove(tapPath, ec);
+
+        Machine            mm;
+        Monitor            mmon(mm);
+        std::ostringstream msink;
+        mmon.exec("BOARDS ADD dc4 dc40", msink);
+        mmon.exec("BOARDS ADD 680kcacr acr0", msink);
+
+        std::ostringstream q;
+        mmon.exec("MOUNT dc40:drive0 \"" + dskPath + "\"", q);
+        CHECK(q.str().find("add CREATE: MOUNT dc40:drive0 \"" + dskPath + "\" CREATE\n") !=
+                  std::string::npos,
+              "a quoted path comes back in the CREATE hint with both quotes (#574)");
+
+        std::ostringstream p;
+        mmon.exec("MOUNT dc40:drive0 no-such-574.dsk", p);
+        CHECK(p.str().find("add CREATE: MOUNT dc40:drive0 no-such-574.dsk CREATE\n") !=
+                  std::string::npos,
+              "an unquoted path comes back as it was typed, with no quotes added");
+
+        std::ostringstream d;
+        // The DC-4 takes its geometry from the image size, so a blank CREATE is refused --
+        // write a flex35-sized image (89600 bytes) first.
+        { std::ofstream(dskPath, std::ios::binary) << std::string(89600, '\0'); }
+        mmon.exec("MOUNT dc40:drive0 \"" + dskPath + "\"", msink);
+        mmon.exec("UNMOUNT dc40:drive0", d);
+        CHECK(d.str().find("dc40:drive0: unmounted (the drive is now empty)") != std::string::npos,
+              "UNMOUNT of a disk says the drive is empty (#577)");
+        CHECK(d.str().find("float") == std::string::npos, "...and nothing about pages floating");
+
+        std::ostringstream t;
+        mmon.exec("MOUNT acr0:tape \"" + tapPath + "\" CREATE", msink);
+        mmon.exec("UNMOUNT acr0:tape", t);
+        CHECK(t.str().find("acr0:tape: unmounted (the recorder is now empty)") !=
+                  std::string::npos,
+              "UNMOUNT of a tape says the recorder is empty (#577)");
+        CHECK(t.str().find("float") == std::string::npos, "...and nothing about pages floating");
+
+        std::filesystem::remove(dskPath, ec);
+        std::filesystem::remove(tapPath, ec);
+    }
+
+    // -----------------------------------------------------------------------
     // A VERB EXISTS ONLY WHILE THE CARD THAT BRINGS IT IS IN A SLOT (core/board.h).
     //
     // This is the whole claim of board-injected commands, and it is why REWIND is not
@@ -1556,6 +1616,84 @@ void test_cli() {
               "REMOVE past the end is refused and says how many there are");
         CHECK(sm.startup.empty(), "...and it removes nothing");
         CHECK(smon.failed(), "...and it trips failed()");
+    }
+
+    // ---------------------------------------------------------------------
+    // CONFIG SAVE: a text value holding a '"' (issue #538)
+    // ---------------------------------------------------------------------
+    // A single string value resolves no escapes, so a '"' was written raw -- and a '#' after
+    // it started a comment, cutting the value short: `mount = "odd"name#1.dsk"` saved fine
+    // and would not load. A value with a '"' is now written '...', and one holding BOTH
+    // quote characters is refused rather than written into a file that will not load.
+    SECTION("CONFIG SAVE -- a value with a '\"' in it saves and loads back (#538)");
+    {
+        auto roundTrips = [](const std::string& want) {
+            Machine m;
+            m.name           = want;
+            std::string text = saveTomlText(m);
+            Machine     back;
+            std::string err;
+            return loadTomlText(text, "quote (saved)", back, err) && back.name == want;
+        };
+        CHECK(roundTrips("odd\"name#1"), "a '\"' followed by a '#' survives the round trip");
+        CHECK(roundTrips("it's #1"), "...and so does a ' with a '#' after it");
+        CHECK(roundTrips("say \"hi\" #1"),
+              "...and a PAIR of '\"' before the '#' -- the reader has to know it is inside "
+              "'...', or the second '\"' reads as the string's end and the '#' cuts the line");
+
+        Machine plain;
+        plain.name = "my #1 C:\\box";
+        CHECK(saveTomlText(plain).find("name     = \"my #1 C:\\box\"\n") != std::string::npos,
+              "a value with no '\"' is written double-quoted exactly as before");
+
+        namespace fs = std::filesystem;
+        const fs::path dir = fs::temp_directory_path() / "swtpcsim-quotetest";
+        std::error_code ec;
+        fs::create_directories(dir, ec);
+        const std::string cfg = (dir / "both.toml").generic_string();
+        {
+            std::ofstream f(cfg);
+            f << "keep\n";
+        }
+        Machine both;
+        both.name = "a'b\"c";
+        std::string err;
+        CHECK(!saveToml(cfg, both, err), "a value holding both ' and '\"' is refused");
+        CHECK(err.find("machine name") != std::string::npos, "...and the message names it");
+        std::ifstream kept(cfg);
+        std::string   line;
+        std::getline(kept, line);
+        CHECK(line == "keep", "...and the file already there is left untouched");
+
+        // The issue's own repro, through MOUNT and CONFIG SAVE: a disk image whose name holds
+        // '"' and '#'. The disk is a MemoryMedia -- Windows forbids '"' in a real filename,
+        // and the bug is in the writer and the reader, not the host's filesystem.
+        setMediaResolver([](const std::string& path, bool ro, std::string&) {
+            return std::make_unique<MemoryMedia>(path, std::vector<uint8_t>(35 * 10 * 256), ro);
+        });
+        const std::string save = (dir / "q.toml").generic_string();
+
+        Machine dm;
+        std::string derr;
+        CHECK(loadTomlText("[machine]\nname = \"q\"\nbase = \"swtpc\"\n", "q", dm, derr),
+              "the swtpc machine loads");
+        Monitor            dmon(dm);
+        std::ostringstream o;
+        dmon.exec("MOUNT dc40:drive1 " + (dir / "odd\"name#1.dsk").generic_string(), o);
+        dmon.exec("CONFIG SAVE " + save, o);
+        CHECK(!dmon.failed(), ("MOUNT and CONFIG SAVE succeed: " + o.str()).c_str());
+
+        Machine     back;
+        std::string berr;
+        CHECK(loadToml(save, back, berr), ("the saved file loads back: " + berr).c_str());
+        Monitor            bmon(back);
+        std::ostringstream shown;
+        bmon.exec("SHOW MOUNTS", shown);
+        CHECK(shown.str().find("odd\"name#1.dsk") != std::string::npos,
+              "...with the disk mounted under its whole name");
+        setMediaResolver(openHostFile);
+        fs::remove(save, ec);
+        fs::remove(cfg, ec);
     }
 }
 

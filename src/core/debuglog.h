@@ -53,6 +53,20 @@ std::ostream& out();
 // costs a disabled channel nothing and the run loop need not push a value per cycle.
 void setPcProvider(std::function<std::optional<uint16_t>()> p);
 
+// THE TERMINAL, when the sink is stderr or stdout. While a guest runs, the console is in
+// raw mode, and raw mode turns off the terminal's own "\n" -> "\r\n": a report line
+// ending in a bare "\n" leaves the cursor where the line ended, and the next line starts
+// in that column. And the guest may be half-way through a line of its own when a report
+// comes. So while `raw()` is true, a line first starts a fresh line if `midLine()` says
+// the screen is not at column 0, every "\n" goes out as "\r\n", and `lineDone()` is told
+// that the screen is at column 0 again. A file sink is never touched.
+struct Terminal {
+    std::function<bool()> raw;       // is the console in raw mode now?
+    std::function<bool()> midLine;   // flush the guest's output; is the cursor past column 0?
+    std::function<void()> lineDone;  // a report line ended: the cursor is at column 0
+};
+void setTerminal(Terminal t);
+
 // ---------------------------------------------------------------------------
 // A CHANNEL -- one debug source with a fixed set of named flags.
 //

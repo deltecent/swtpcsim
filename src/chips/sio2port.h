@@ -63,7 +63,11 @@ public:
 
     // The card forwards its Clock here from clockAttached(). Null until then, and an
     // unclocked 6850 reads as a dead card rather than dereferencing null.
-    void attachClock(Clock* c) { clock_ = c; }
+    void attachClock(Clock* c) {
+        if (clock_) clock_->unwatch(&clock_);
+        clock_ = c;
+        if (clock_) clock_->watch(&clock_);
+    }
 
     // The base-port jumper lives on the CARD (it is the card's `port` property); the
     // section is told where it landed.

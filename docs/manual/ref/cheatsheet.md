@@ -34,7 +34,8 @@ swtpcsim [options] [machine]
   -f, --file <path>  ALWAYS a file -- never a built-in name.
   -n, --none         empty backplane: no boards, no memory, nothing.
   -l, --list         list the built-in machines and exit.
-  -s, --script <f>   run a command script, then exit with its status.
+  -s, --script <f>   run a command script, then exit with its status. Paths in
+                     it are relative to the script's folder.
   -x, --exec <cmd>   run one monitor command (repeatable), then exit.
   -i, --interactive  after --script/--exec, stay in the monitor.
       --mcp          MCP server on stdio.

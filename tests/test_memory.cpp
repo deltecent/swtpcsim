@@ -31,6 +31,38 @@ void test_memory() {
     std::string err;
 
     {
+        // AN EMPTY SOCKET IS EMPTY WHATEVER ITS `size` SAYS (#576). A rom takes its extent
+        // from its image, so `size` on one is ignored -- and an empty socket given one used
+        // to decode that range and answer 00 from the store, where the bus floats FF. The
+        // power-on reload also tried to open the socket's empty mount, and said so.
+        Machine m;
+        auto* b = addMem(m, "mem0");
+        Region sized = rom(0xE000, "");
+        sized.size = 256;
+        CHECK(b->addRegion(sized, err), "an empty socket with a size is accepted");
+        Region socket = rom(0xF000, "");
+        socket.size     = 0x1000;  // a 4K socket...
+        socket.relocate = true;    // ...that will take MON680 moved down to F000
+        CHECK(b->addRegion(socket, err), "...and a second one, for a chip to go in later");
+        CHECK(b->addRegion(rom(0xD000, ""), err), "...and one with no size at all");
+        m.power();
+
+        CHECK(m.bus.memRead(0xE000) == 0xFF && m.bus.lastUnclaimed(),
+              "the sized empty socket decodes nothing: the read floats to FF");
+        bool powerMsg = false;
+        for (const auto& s : m.drainBoardLog())
+            if (s.find("power:") != std::string::npos) powerMsg = true;
+        CHECK(!powerMsg, "power-on does not try to load a chip into an empty socket");
+
+        // A chip MOUNTed later takes its extent from the image, not the ignored `size`.
+        CHECK(b->mount("rom1", "builtin:mon680", false, err), "a chip goes into the sized socket");
+        CHECK(m.bus.memRead(0xF000) == 0x8D && !m.bus.lastUnclaimed(), "it answers at F000");
+        (void)m.bus.memRead(0xF100);
+        CHECK(m.bus.lastUnclaimed(),
+              "...and only over its 256-byte image: the 4K `size` did not widen it");
+    }
+
+    {
         // ***THE CENTRAL CLAIM OF THE WHOLE DESIGN***
         // A rom region does not reject a write. It never answers the cycle. And
         // with nothing else at that address, the byte is simply gone.
