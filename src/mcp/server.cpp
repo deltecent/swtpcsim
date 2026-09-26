@@ -516,7 +516,7 @@ const char* stopReasonName(StopReason w) {
     case StopReason::Halted:       return "halt";
     case StopReason::Attn:         return "attn";
     case StopReason::InputEnded:   return "input-ended";
-    case StopReason::Interrupted:  return "interrupted";
+    case StopReason::StopRequested:  return "interrupted";
     case StopReason::WindowClosed: return "window-closed";
     case StopReason::NoCpu:        return "no-cpu";
     case StopReason::StepTarget:   return "step-target";
@@ -1140,17 +1140,17 @@ Json callTool(Machine& m, McpSession& sess, const std::string& name, const Json&
         for (;;) {
             drain();
             if (!until.empty() && out.find(until) != std::string::npos) { stopped = "match"; break; }
-            // ASK BEFORE THE SLICE, not just after it. An interrupt that arrived since the last
+            // ASK BEFORE THE SLICE, not just after it. A stop request that arrived since the last
             // slice returned -- and with a clock_hz set, most of this loop's wall time is the
             // pacing sleep below -- is caught here. Measured before this check existed, when
             // every slice still cleared the flag on entry: five of eight ^Cs swallowed at
             // clock_hz=2000000. The slice below no longer clears it either (see there).
-            if (Debugger::interrupted()) {
+            if (Debugger::stopRequested()) {
                 // CONSUME it: reporting it to the client is what "handled" means. Leave it
                 // standing and the next ^C -- the one that means "I said stop" -- would find
                 // an unconsumed flag and kill the process (SigintGuard, core/debug.h) even
                 // though this one was heard and answered.
-                Debugger::clearInterrupt();
+                Debugger::clearStopRequest();
                 stopped = "interrupted";
                 break;
             }
@@ -1159,7 +1159,7 @@ Json callTool(Machine& m, McpSession& sess, const std::string& name, const Json&
 
             const uint64_t rxBefore     = m.rxBytes();
             const uint64_t hungryBefore = con->hungry();
-            // KEEP A PENDING INTERRUPT (the `false`). The check at the top of this loop and the
+            // KEEP A PENDING STOP REQUEST (the `false`). The check at the top of this loop and the
             // slice are two steps, and a cancel or ^C can land between them. If the slice cleared
             // the flag on entry, as a whole RUN does, that one would be erased unseen and the run
             // would go on to its full budget: on Windows, 9 cancels in 5000 were lost that way.
@@ -1188,7 +1188,7 @@ Json callTool(Machine& m, McpSession& sess, const std::string& name, const Json&
             if (r.why == StopReason::Halted)      { stopped = "halt";        break; }
             if (r.why == StopReason::Breakpoint)  { stopped = "breakpoint";  break; }
             if (r.why == StopReason::NoCpu)       { stopped = "no-cpu";      break; }
-            if (r.why == StopReason::Interrupted) { Debugger::clearInterrupt();
+            if (r.why == StopReason::StopRequested) { Debugger::clearStopRequest();
                                                     stopped = "interrupted"; break; }
 
             // IDLE-STOP -- hand control back when the guest has nothing to do, so the AI is not
@@ -1759,7 +1759,7 @@ int runMcp(Machine& m, std::istream& in, std::ostream& out, const std::string& m
                 std::lock_guard<std::mutex> lk(mu);
                 const Json& target = qm.req.at("params").at("requestId");
                 if (haveCurrentId && !target.isNull() && target.dump() == currentId.dump())
-                    Debugger::interrupt();
+                    Debugger::requestStop();
                 continue;  // acted on immediately -- never queued, never replied to
             }
             // #490: `status` MUST answer even while the worker is stuck inside a wedged or
@@ -1813,16 +1813,16 @@ int runMcp(Machine& m, std::istream& in, std::ostream& out, const std::string& m
         Json        id     = req.at("id");
 
         {
-            // A stale interrupt -- a ^C that landed after the previous call already
+            // A stale stop request -- a ^C that landed after the previous call already
             // returned, or while some other tool ran -- must not carry into this request
             // and kill it on the first slice. Clear it HERE, under the same lock that
             // publishes the id, and not at the top of the `run` tool: everything between
             // marking a request in flight and that handler running is a window in which
-            // the reader could match a cancel, call interrupt(), and have the handler
+            // the reader could match a cancel, call requestStop(), and have the handler
             // wipe it on the way past. Clearing before the id is visible closes it -- a
             // cancel that arrives from this point on is for THIS request and survives.
             std::lock_guard<std::mutex> lk(mu);
-            Debugger::clearInterrupt();
+            Debugger::clearStopRequest();
             currentId     = id;
             haveCurrentId = true;
         }

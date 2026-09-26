@@ -15,11 +15,11 @@ namespace swtpc {
 
 // The ONE thing a signal handler is allowed to touch. Not a std::string, not the
 // machine, not a stream -- a lock-free flag, and nothing else.
-static std::atomic<bool> g_interrupt{false};
+static std::atomic<bool> g_stopRequest{false};
 
-void Debugger::interrupt() { g_interrupt.store(true); }
-void Debugger::clearInterrupt() { g_interrupt.store(false); }
-bool Debugger::interrupted() { return g_interrupt.load(); }
+void Debugger::requestStop() { g_stopRequest.store(true); }
+void Debugger::clearStopRequest() { g_stopRequest.store(false); }
+bool Debugger::stopRequested() { return g_stopRequest.load(); }
 
 // See SigintGuard in debug.h for the whole reasoning, including why the second ^C
 // has to kill. `g_prevSigint` is read only by the handler and written only when a
@@ -27,7 +27,7 @@ bool Debugger::interrupted() { return g_interrupt.load(); }
 static void (*g_prevSigint)(int) = nullptr;
 
 static void onSigint(int sig) {
-    if (g_interrupt.exchange(true)) {
+    if (g_stopRequest.exchange(true)) {
         // The previous one was never consumed -- this operator is not being heard. Die the
         // way they meant: the default disposition, not whatever was installed before us.
         std::signal(sig, SIG_DFL);
@@ -374,7 +374,7 @@ RunResult Debugger::run(uint64_t maxSteps, bool clearPending) {
     // an unrelated hit at the new address.
     if (skipArmed_ && cpu->pc() != resumeCyclePc_) skipArmed_ = false;
 
-    if (clearPending) clearInterrupt();
+    if (clearPending) clearStopRequest();
     armObserver();
     m_.running = true;
 
@@ -667,8 +667,8 @@ RunResult Debugger::run(uint64_t maxSteps, bool clearPending) {
             break;
         }
 
-        if (g_interrupt.load()) {
-            r.why = StopReason::Interrupted;
+        if (g_stopRequest.load()) {
+            r.why = StopReason::StopRequested;
             break;
         }
 

@@ -1625,7 +1625,7 @@ void Monitor::runMachine(std::ostream& out, bool stepOver) {
     //
     // A ^C from before this RUN must not stop it, so the flag is cleared ONCE, here,
     // before the guard can set it -- and NOT by every slice below (see there).
-    Debugger::clearInterrupt();
+    Debugger::clearStopRequest();
     SigintGuard guard;
 
     // Whose screen this is. Pushed at the start of every run rather than wired once,
@@ -1666,8 +1666,8 @@ void Monitor::runMachine(std::ostream& out, bool stepOver) {
         // keyboard poll -- is caught here. Each slice used to clear the flag on entry,
         // which erased exactly those: a paced RUN (clock_hz set, a live wire) lost 54 of
         // 100 ^Cs on Windows and 92 of 100 on macOS, and a flat-out one 7 in 1000.
-        if (Debugger::interrupted()) {
-            r.why = StopReason::Interrupted;
+        if (Debugger::stopRequested()) {
+            r.why = StopReason::StopRequested;
             break;
         }
 
@@ -1682,7 +1682,7 @@ void Monitor::runMachine(std::ostream& out, bool stepOver) {
         // keystroke is picked up promptly; long enough that the per-slice overhead
         // is noise.
         //
-        // KEEP A PENDING INTERRUPT (the `false`): one can also land between the check at
+        // KEEP A PENDING STOP REQUEST (the `false`): one can also land between the check at
         // the top of this loop and here, and clearing it on entry would erase it unseen.
         // It was cleared once already, at the start of this RUN.
         r = m_.debug.run(2000, false);
@@ -1931,7 +1931,7 @@ void Monitor::runMachine(std::ostream& out, bool stepOver) {
     if (anyConsole) out << "\n";  // the guest was mid-line; do not print on top of it
 
     // EVERY STOP SAYS WHY, and there is now exactly one path that says it. This
-    // used to guess -- `Interrupted && anyConsole` meant "probably ATTN" -- and a
+    // used to guess -- `StopRequested && anyConsole` meant "probably ATTN" -- and a
     // guess is what you write when the reason was never carried. Now it is: ATTN,
     // a script's input running out, and a real ^C are three different words.
     //
@@ -2489,7 +2489,7 @@ static void reportStop(const RunResult& r, const Debugger& dbg, std::ostream& ou
                       "input ended -- the machine is still at %s. RUN resumes.", fmtWord(r.pc).c_str());
         out << buf << "\n";
         break;
-    case StopReason::Interrupted:
+    case StopReason::StopRequested:
         out << "^C -- stopped at the instruction boundary. The machine is intact.\n";
         break;
     case StopReason::WindowClosed:

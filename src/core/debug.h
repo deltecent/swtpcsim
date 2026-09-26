@@ -115,7 +115,7 @@ enum class StopReason {
                   // a stop the guest can tell happened -- a bare RUN resumes it.
     InputEnded,   // a SCRIPT's input ran out and the guest went quiet asking for
                   // more. Nobody stopped it; there is just nobody left to type.
-    Interrupted,  // the operator pressed ^C
+    StopRequested,  // the operator pressed ^C, or an --mcp client cancelled the run
     WindowClosed, // the operator closed the display window. Like Attn, not a fault
                   // and invisible to the guest -- a bare RUN resumes it, into the
                   // same window (host/display.h takeQuitRequest).
@@ -262,10 +262,10 @@ public:
     // Run. `maxSteps == 0` means until something stops us -- a breakpoint, a HLT,
     // or ^C. Returns WHY it stopped, always: there is no "it just came back".
     //
-    // `clearPending` (default true) clears a pending interrupt on entry, so a ^C
+    // `clearPending` (default true) clears a pending stop request on entry, so a ^C
     // left over from before this run does not stop it at once. A caller that drives
     // run() in SLICES, and clears the flag itself once at the start of its own
-    // command, passes false: otherwise an interrupt landing between its own check
+    // command, passes false: otherwise a stop request landing between its own check
     // and the next slice is erased unseen (the --mcp run tool, the monitor's RUN).
     RunResult run(uint64_t maxSteps, bool clearPending = true);
 
@@ -278,17 +278,17 @@ public:
 
     // ^C, from the signal handler. The ONLY thing the handler does is set this,
     // because that is the only thing it is safe to do.
-    static void interrupt();
-    static void clearInterrupt();
+    static void requestStop();
+    static void clearStopRequest();
 
     // Is one pending RIGHT NOW? By default run() clears the flag on entry, so a
     // caller that drives run() in SLICES cannot learn from the slice alone that an
     // interrupt arrived between two of them -- the next slice wipes it first. Such a
     // caller asks here at the top of its own loop, AND passes clearPending=false to
-    // run(), since an interrupt can also land between that check and the slice. See
+    // run(), since a stop request can also land between that check and the slice. See
     // the --mcp run tool and the monitor's RUN, both of which sleep between slices to
     // pace a clock.
-    static bool interrupted();
+    static bool stopRequested();
 
 private:
     bool armObserver();
@@ -391,7 +391,7 @@ private:
 // server holds this guard for its whole session, not for one call, so without that
 // rule a ^C at a server sitting idle -- or at one wedged somewhere the flag is never
 // read -- would be swallowed, and the process could not be stopped from the keyboard
-// at all. So the handler checks whether a previous interrupt is STILL unconsumed: if
+// at all. So the handler checks whether a previous ^C is STILL unconsumed: if
 // it is, it puts the default disposition back and re-raises, and the process dies the
 // way the operator plainly meant. Everything it does is what a handler is allowed to
 // do -- an atomic flag, signal(), raise() -- and nothing else runs on that thread.

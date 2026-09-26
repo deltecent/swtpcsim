@@ -42,9 +42,9 @@ std::string R(const char* word) {
 } // namespace
 
 
-// A board that drops a ^C into one exact spot: between the monitor RUN loop's "was I
-// interrupted?" check and the slice it then runs. The loop reads the backplane's rxBytes()
-// between the two, so this board raises the interrupt from there -- a window a few
+// A board that drops a ^C into one exact spot: between the monitor RUN loop's "was a stop
+// requested?" check and the slice it then runs. The loop reads the backplane's rxBytes()
+// between the two, so this board raises the stop request from there -- a window a few
 // instructions wide, reached without timing. (Same idea as test_mcp.cpp's GapBoard.)
 //
 // ONE-SHOT: armed before RUN starts, the first call is the pre-slice one. Raising on every
@@ -56,7 +56,7 @@ public:
     bool decodes(const BusCycle&) const override { return false; }
     std::vector<Property> properties() override { return {}; }
     uint64_t rxBytes() const override {
-        if (armed.exchange(false)) Debugger::interrupt();
+        if (armed.exchange(false)) Debugger::requestStop();
         return 0;
     }
 };
@@ -65,7 +65,7 @@ void test_cli() {
 
     SECTION("RUN -- a ^C that lands between the loop's check and the slice is not erased");
     {
-        // Each slice used to clear the interrupt flag on entry, so a ^C arriving between
+        // Each slice used to clear the stop-request flag on entry, so a ^C arriving between
         // slices -- the throttle's sleep, the pump, the keyboard poll -- was erased and RUN
         // carried on. Measured with a signal sent mid-RUN: paced (clock_hz and a live wire),
         // 54 of 100 lost on Windows and 92 of 100 on macOS; flat out, 7 in 1000 on Windows.
@@ -93,11 +93,11 @@ void test_cli() {
         // A failing RUN never ends on its own. Keep interrupting until it does, so a
         // failure is a failed CHECK and not a hung test binary.
         while (!done) {
-            Debugger::interrupt();
+            Debugger::requestStop();
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
         }
         t.join();
-        Debugger::clearInterrupt();
+        Debugger::clearStopRequest();
 
         CHECK(!gap->armed, "the board did fire -- RUN read rxBytes() before its first slice");
         CHECK(stopped, "RUN stopped on the ^C that landed between its check and the slice");

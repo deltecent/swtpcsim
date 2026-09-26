@@ -79,7 +79,7 @@ private:
 // server is still writing to it. A plain std::ostringstream cannot be -- reading
 // out.str() while runMcp writes is a data race -- so a test that needs to know a
 // reply has landed before it does the next thing has to have this. That is the only
-// honest way to time an interrupt: wait until the setup calls have actually ANSWERED,
+// honest way to time a stop request: wait until the setup calls have actually ANSWERED,
 // rather than guessing how long a guest boot takes on someone else's runner.
 class SinkBuf : public std::streambuf {
 public:
@@ -186,16 +186,16 @@ bool loadAltair680(Machine& m) {
 //
 // THIS IS WHAT REPLACES "sleep 200ms and assume the call under test is under way." A ^C or
 // a `notifications/cancelled` is only honoured once the worker has dequeued the call it
-// targets: runMcp calls Debugger::clearInterrupt() as it publishes each request id, so a
+// targets: runMcp calls Debugger::clearStopRequest() as it publishes each request id, so a
 // signal landing a moment too early is wiped by the very dispatch that was about to run it,
 // and the call goes on to serve its whole budget and answer `timeout`. A fixed sleep is a
 // guess that the dequeue already happened -- the guess this file warns against two comments
 // down, made anyway because there is no reply to wait for. On a loaded Windows CI runner it
 // lost: PR #506's first leg, trial 4 of 6.
 //
-// `in_flight` is set under the same lock as clearInterrupt() and on the very next line, so
+// `in_flight` is set under the same lock as clearStopRequest() and on the very next line, so
 // observing it TRUE is proof the clear is already behind us -- a signal raised from here on
-// is seen by the `Debugger::interrupted()` check at the top of the run loop and cannot be
+// is seen by the `Debugger::stopRequested()` check at the top of the run loop and cannot be
 // swallowed. Waiting for FALSE first is what makes the TRUE mean anything: it pins the
 // worker as idle before the call under test is fed, so the TRUE that follows can only be
 // that call and not the tail of the setup.
@@ -238,7 +238,7 @@ bool waitForWorker(FeedBuf& feedBuf, SinkBuf& sinkBuf, bool wantBusy, int ms = 3
 // still not a guarantee: a loaded Windows runner lost that race (PR #506). waitForWorker()
 // above replaces it with the answer from the server itself.
 //
-// `after` is fed once the interrupt has been answered (the stale-flag checks). The raise
+// `after` is fed once the stop request has been answered (the stale-flag checks). The raise
 // happens on this thread, between two feeds, so it can never escape runMcp's SigintGuard
 // -- outside it SIGINT is back to its default disposition and would kill the test binary.
 struct SigintRun {
@@ -274,11 +274,11 @@ SigintRun runWithSigint(Machine& m, const std::vector<std::string>& setup,
 
     const int runId = feed(underTest);
     CHECK(waitForWorker(feedBuf, sinkBuf, true),
-          "the call under test is DISPATCHED -- so clearInterrupt() is behind us -- before "
+          "the call under test is DISPATCHED -- so clearStopRequest() is behind us -- before "
           "the signal is raised");
     // Start the clock at DISPATCH, not at the feed: `timeout_ms` is counted from the moment
     // the worker enters the call, so that is the window "well inside the budget" is about.
-    // Timing from the feed would charge the queue wait to the interrupt.
+    // Timing from the feed would charge the queue wait to the stop request.
     const auto t0 = std::chrono::steady_clock::now();
     std::raise(SIGINT);
     CHECK(answered(runId), "the interrupted run answered");
@@ -313,13 +313,13 @@ constexpr const char* kMon680Examine = "MFF0100";
 constexpr const char* kMon680ExamineEcho = "FF01 22";
 
 // A board that drops a ^C into one exact spot: the gap between the --mcp run loop's
-// "was I interrupted?" check and the slice it then runs. That loop reads the backplane's
-// rxBytes() between the two, so this board raises the interrupt from there. It is how a
+// "was a stop requested?" check and the slice it then runs. That loop reads the backplane's
+// rxBytes() between the two, so this board raises the stop request from there. It is how a
 // test reaches a window a few instructions wide WITHOUT timing: on Windows the real one
 // was hit about once in 550 cancels, which no test can wait for.
 //
 // ONE-SHOT, and that is load-bearing. The loop also reads rxBytes() AFTER each slice, and
-// an interrupt raised there is caught by the next top-of-loop check whatever the slice
+// a stop request raised there is caught by the next top-of-loop check whatever the slice
 // does -- raise on every call and the test passes with or without the fix. Armed while the
 // worker is idle, the first call after arming is the pre-slice one.
 class GapBoard : public Board {
@@ -329,7 +329,7 @@ public:
     bool decodes(const BusCycle&) const override { return false; }
     std::vector<Property> properties() override { return {}; }
     uint64_t rxBytes() const override {
-        if (armed.exchange(false)) Debugger::interrupt();
+        if (armed.exchange(false)) Debugger::requestStop();
         return 0;
     }
 };
@@ -836,12 +836,12 @@ void test_mcp() {
         // #488: `--mcp`'s stdin IS the JSON-RPC channel, so a caller has no in-band way to
         // stop a run that will not reach `until`/idle/timeout on its own -- unlike a piped
         // monitor RUN, which already had SigintGuard (core/debug.h). Proves the guard is now
-        // installed for the whole of runMcp too: an interrupt lands mid-call (simulated with
+        // installed for the whole of runMcp too: a stop request lands mid-call (simulated with
         // std::raise, the portable way to invoke the currently-installed handler without
         // depending on OS-level signal delivery -- the handler itself, and the atomic flag it
         // sets, are exactly what a real SIGINT would drive) and the run returns almost at once
         // with stopped:"interrupted", nowhere near its multi-second budget. The trailing run
-        // also proves `Debugger::clearInterrupt()` at the top of each call means the flag does
+        // also proves `Debugger::clearStopRequest()` at the top of each call means the flag does
         // not bleed into the next one.
         Machine m;
         if (!loadAltair680(m)) return;
@@ -857,20 +857,20 @@ void test_mcp() {
         CHECK(rep[3].at("result").at("structuredContent").at("stopped").str() == "interrupted",
               "the 4000ms-budget run stops on the SIGINT, not idle or timeout");
         CHECK(r.elapsedMs < 1500,
-              ("the interrupt landed well inside the 4000ms budget (took " +
+              ("the stop request landed well inside the 4000ms budget (took " +
                std::to_string(r.elapsedMs) + "ms)")
                   .c_str());
         CHECK(rep[4].at("result").at("structuredContent").at("stopped").str() == "timeout",
-              "clearInterrupt() means the next run() does not inherit a stale flag -- idle=off "
-              "still set, so it runs its own budget out exactly like the no-interrupt case");
+              "clearStopRequest() means the next run() does not inherit a stale flag -- idle=off "
+              "still set, so it runs its own budget out exactly like the no-stop case");
     }
 
     SECTION("MCP: a SIGINT is not lost in the pacing sleep between slices (#488)");
     {
         // The case the flat-out test above cannot see. With a clock_hz set, `run` sleeps
         // between slices to pace the crystal, so most of its wall time is spent OUTSIDE
-        // Debugger::run() -- and run() clears the interrupt flag as it enters. Before the
-        // Debugger::interrupted() check at the top of the loop, a ^C landing in that sleep
+        // Debugger::run() -- and run() clears the stop-request flag as it enters. Before the
+        // Debugger::stopRequested() check at the top of the loop, a ^C landing in that sleep
         // was wiped by the next slice: five of eight trials here returned `timeout` having
         // ignored the signal outright. Repeat the trial, because "usually stops" is exactly
         // the bug -- a cancellation that works two times in three is not a cancellation.
@@ -1152,14 +1152,14 @@ void test_mcp() {
               "out of band, not queued behind it");
     }
 
-    SECTION("MCP: an interrupt that lands between the loop's check and the slice is not "
+    SECTION("MCP: a stop request that lands between the loop's check and the slice is not "
             "erased");
     {
-        // The slice used to clear the interrupt flag on entry, so a cancel or ^C landing just
+        // The slice used to clear the stop-request flag on entry, so a cancel or ^C landing just
         // after the loop's own check was wiped unseen and the run served its whole budget --
         // `timeout`, where the client had asked it to stop. Windows CI hit it on #506 and
         // #508; 5000 tries there lost 9 cancels before the fix and none after. GapBoard (above)
-        // puts the interrupt in that window every time, so this fails every time without the
+        // puts the stop request in that window every time, so this fails every time without the
         // fix rather than once in 550.
         Machine m;
         if (!loadAltair680(m)) return;
@@ -1197,7 +1197,7 @@ void test_mcp() {
         const std::string st =
             repliesById(sinkBuf.text())[3].at("result").at("structuredContent").at("stopped").str();
         CHECK(st == "interrupted",
-              ("an interrupt raised between the check and the slice stops the run (stopped=" +
+              ("a stop request raised between the check and the slice stops the run (stopped=" +
                st + ")")
                   .c_str());
     }
