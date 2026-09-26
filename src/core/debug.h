@@ -266,7 +266,7 @@ public:
     // left over from before this run does not stop it at once. A caller that drives
     // run() in SLICES, and clears the flag itself once at the start of its own
     // command, passes false: otherwise an interrupt landing between its own check
-    // and the next slice is erased unseen (the --mcp run tool).
+    // and the next slice is erased unseen (the --mcp run tool, the monitor's RUN).
     RunResult run(uint64_t maxSteps, bool clearPending = true);
 
     // STEP-OVER's temporary breakpoint (NEXT). A run-scoped, one-shot PC target
@@ -286,7 +286,8 @@ public:
     // interrupt arrived between two of them -- the next slice wipes it first. Such a
     // caller asks here at the top of its own loop, AND passes clearPending=false to
     // run(), since an interrupt can also land between that check and the slice. See
-    // the --mcp run tool, which sleeps between slices to pace a clock.
+    // the --mcp run tool and the monitor's RUN, both of which sleep between slices to
+    // pace a clock.
     static bool interrupted();
 
 private:

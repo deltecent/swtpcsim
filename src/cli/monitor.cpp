@@ -1622,6 +1622,10 @@ void Monitor::runMachine(std::ostream& out, bool stepOver) {
     // ^C still stops a PIPED run, because there raw mode never happened and the
     // signal is all there is. On a terminal ISIG is off and this never fires --
     // which is the point: the guest gets that byte.
+    //
+    // A ^C from before this RUN must not stop it, so the flag is cleared ONCE, here,
+    // before the guard can set it -- and NOT by every slice below (see there).
+    Debugger::clearInterrupt();
     SigintGuard guard;
 
     // Whose screen this is. Pushed at the start of every run rather than wired once,
@@ -1658,6 +1662,15 @@ void Monitor::runMachine(std::ostream& out, bool stepOver) {
     clk::time_point idleSince{};
 
     for (;;) {
+        // A ^C THAT LANDED BETWEEN SLICES -- in the throttle's sleep, the pump, the
+        // keyboard poll -- is caught here. Each slice used to clear the flag on entry,
+        // which erased exactly those: a paced RUN (clock_hz set, a live wire) lost 54 of
+        // 100 ^Cs on Windows and 92 of 100 on macOS, and a flat-out one 7 in 1000.
+        if (Debugger::interrupted()) {
+            r.why = StopReason::Interrupted;
+            break;
+        }
+
         // What the guest did with its slice: did it SAY anything, did it RECEIVE
         // anything, and how often did it come to the keyboard and find nothing there.
         // Those three are the whole of the idle judgement at the bottom of the loop.
@@ -1668,7 +1681,11 @@ void Monitor::runMachine(std::ostream& out, bool stepOver) {
         // A slice, then a look around. Short enough that ATTN feels instant and a
         // keystroke is picked up promptly; long enough that the per-slice overhead
         // is noise.
-        r = m_.debug.run(2000);
+        //
+        // KEEP A PENDING INTERRUPT (the `false`): one can also land between the check at
+        // the top of this loop and here, and clearing it on entry would erase it unseen.
+        // It was cleared once already, at the start of this RUN.
+        r = m_.debug.run(2000, false);
 
         // Every board with a line on it gets its slice of wall time, console or no
         // console: a 2SIO wired to a socket is still moving bytes when nobody is
