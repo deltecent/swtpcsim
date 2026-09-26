@@ -2,7 +2,7 @@
 
 namespace swtpc {
 
-TelnetStream::TelnetStream(std::unique_ptr<ByteStream> inner, std::string spec, bool server)
+TelnetStream::TelnetStream(std::unique_ptr<TcpStream> inner, std::string spec, bool server)
     : inner_(std::move(inner)), spec_(std::move(spec)), server_(server) {}
 
 size_t TelnetStream::read(uint8_t* buf, size_t n) {
@@ -44,6 +44,11 @@ void TelnetStream::pump() {
     // Ship the telnet commands the codec generated (raw wire bytes, IAC and all).
     std::string wire = codec_.takeOut();
     if (!wire.empty()) inner_->write((const uint8_t*)wire.data(), wire.size());
+}
+
+void TelnetStream::greet(const std::string& owner) {
+    std::string line = inner_->takeGreeting(owner);
+    if (!line.empty()) write((const uint8_t*)line.data(), line.size());
 }
 
 } // namespace swtpc

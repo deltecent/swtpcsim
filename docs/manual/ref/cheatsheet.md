@@ -178,8 +178,10 @@ base      = octal          # read/print the wire class in split octal
 | `null` | nowhere. Writes vanish, reads never come. |
 | `loopback` | itself — what you write comes back. |
 | `scripted` | a caller in place of a human — what MCP and the tests type into. |
-| `socket:PORT` | **listens** — this is telnet-in. |
-| `socket:HOST:PORT` | **calls out**. |
+| `socket:PORT` | **listens**, as a raw pipe — for a program at the far end. `?banner` greets each caller. |
+| `socket:HOST:PORT` | **calls out**, as a raw pipe. |
+| `telnet:PORT` | **listens**, speaking Telnet — this is telnet-in for a person. Greets each caller; `?banner=off` stops it. |
+| `telnet:HOST:PORT` | **calls out**, taking the telnet client's part. |
 | `serial:DEVICE` | a real serial port on this host. |
 | `in:PATH` | a host file as a reader (paper tape). `?cps=N` paces it. |
 | `out:PATH` | a host file as a punch — 8-bit clean, never truncating. |

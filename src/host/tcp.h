@@ -33,6 +33,7 @@ namespace swtpc {
 class TcpStream : public ByteStream {
 public:
     explicit TcpStream(std::string spec) : spec_(std::move(spec)) {}
+    ~TcpStream() override { dropGreeting(); }
 
     std::string describe() const override { return spec_; }
 
@@ -52,6 +53,14 @@ public:
     LineStatus status() const override;
     void       setControl(const LineControl& c) override;
 
+    // THE CONNECT BANNER, the terminal server's hello to a caller on a LISTENING port
+    // (`telnet:2323` by default, `socket:2323?banner` by request). takeGreeting()
+    // returns the line owed to the current caller -- once -- or "" when none is owed;
+    // greet() writes it raw. TelnetStream takes it instead and sends it through its
+    // codec, after the option negotiation. See ByteStream::greet.
+    std::string takeGreeting(const std::string& owner);
+    void        greet(const std::string& owner) override;
+
 protected:
     // Give the session a turn: answer the phone, or finish dialling. Called from
     // pump(), before any bytes move.
@@ -59,7 +68,12 @@ protected:
 
     std::unique_ptr<platform::TcpConn> conn_;
 
+    // A caller just answered a listener that greets: owe them the banner, on `port`.
+    void oweGreeting(uint16_t port);
+
 private:
+    void dropGreeting();
+
     static constexpr size_t kTxCap = 8192;
 
     std::string spec_;
@@ -78,6 +92,9 @@ private:
     // traces only the EDGES -- a client answering, the far end hanging up -- and not
     // the steady state on every time slice. See tcp.cpp.
     bool wasUp_ = false;
+
+    bool     greetDue_  = false;  // this caller has not had the banner yet
+    uint16_t greetPort_ = 0;      // the listening port, for the banner's text
 };
 
 // `socket:2323` -- we LISTEN. One client at a time, which is what a modem is. The
@@ -85,14 +102,17 @@ private:
 // again rather than a simulator you have to restart.
 class TcpListenStream : public TcpStream {
 public:
-    TcpListenStream(std::unique_ptr<platform::TcpListener> l, std::string spec)
-        : TcpStream(std::move(spec)), listener_(std::move(l)) {}
+    // `banner`: greet each caller (the `?banner` option; on by default for telnet:).
+    TcpListenStream(std::unique_ptr<platform::TcpListener> l, std::string spec,
+                    bool banner = false)
+        : TcpStream(std::move(spec)), listener_(std::move(l)), banner_(banner) {}
 
 protected:
     void refresh() override;
 
 private:
     std::unique_ptr<platform::TcpListener> listener_;
+    bool                                   banner_;
 };
 
 // `socket:host:port` -- we CALL OUT. The handshake is non-blocking, so a session

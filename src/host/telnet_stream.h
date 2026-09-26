@@ -26,6 +26,7 @@
 // so SHOW and CONFIG SAVE round-trip it.
 
 #include "host/stream.h"
+#include "host/tcp.h"
 #include "host/telnet_codec.h"
 
 #include <cstdint>
@@ -41,7 +42,7 @@ public:
     // the operator's `telnet:...` text, echoed by describe(). `server` is true for a
     // LISTEN (we host a BBS, so WE offer to echo) and false for a dial-out (we are
     // the client, so we ask the far end to echo).
-    TelnetStream(std::unique_ptr<ByteStream> inner, std::string spec, bool server);
+    TelnetStream(std::unique_ptr<TcpStream> inner, std::string spec, bool server);
 
     std::string describe() const override { return spec_; }
 
@@ -68,8 +69,12 @@ public:
     }
     std::vector<std::string> drainLog() override { return inner_->drainLog(); }
 
+    // The socket owes the banner; we SAY it, telnet-encoded, behind the negotiation
+    // pump() already sent on this session's carrier edge.
+    void greet(const std::string& owner) override;
+
 private:
-    std::unique_ptr<ByteStream> inner_;
+    std::unique_ptr<TcpStream>  inner_;
     std::string                 spec_;
     bool                        server_;
     TelnetCodec                 codec_;

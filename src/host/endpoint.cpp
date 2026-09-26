@@ -63,8 +63,8 @@ bool parseHostPort(const std::string& spec, std::string& host, uint16_t& port,
 
 std::string endpointHelp(bool all) {
     std::vector<std::string> parts = {
-        "console", "null", "loopback", "scripted", "socket:PORT", "socket:HOST:PORT",
-        "telnet:PORT", "telnet:HOST:PORT", "serial:DEVICE", "in:PATH", "out:PATH",
+        "console", "null", "loopback", "scripted", "socket:PORT[?banner]", "socket:HOST:PORT",
+        "telnet:PORT[?banner=off]", "telnet:HOST:PORT", "serial:DEVICE", "in:PATH", "out:PATH",
         "terminal[?emulation=vt100&size=80x24]",
     };
     // `printer:` only where a host print system was found at build time -- absent, the
@@ -177,13 +177,54 @@ std::function<std::unique_ptr<ByteStream>(const std::string&, std::string&)> reb
 // so the parse -- and every error message the operator sees -- has one home. `scheme`
 // names the keyword for those messages; `spec` is the operator's full text, kept for
 // describe() and the socket debug trace.
-static std::unique_ptr<ByteStream> makeTcpStream(const std::string& rest,
-                                                 const std::string& spec, const char* scheme,
-                                                 std::string& err) {
+//
+// `?banner` (a bare key is =true) greets each caller to a LISTEN with a one-line
+// "Connected to ..." (host/tcp.h, ByteStream::greet). `bannerDefault` is the scheme's:
+// on for telnet:, where a person is calling; off for socket:, the raw pipe another
+// machine dials, where a banner would land in the far guest's input as data.
+static std::unique_ptr<TcpStream> makeTcpStream(const std::string& body,
+                                                const std::string& spec, const char* scheme,
+                                                bool bannerDefault, std::string& err) {
+    std::string rest = body, query;
+    if (size_t q = body.find('?'); q != std::string::npos) {
+        rest  = body.substr(0, q);
+        query = body.substr(q + 1);
+    }
+
     if (rest.empty()) {
         err = std::string(scheme) + ": needs a port (" + scheme + ":2323) or a host and port (" +
               scheme + ":bbs.example:23)";
         return nullptr;
+    }
+
+    // The options. `banner` is the only one; a bare key is =true, the convention the
+    // mirror's `ro` and the tee use.
+    bool banner = bannerDefault, bannerSet = false;
+    for (size_t start = 0; start <= query.size();) {
+        size_t      amp = query.find('&', start);
+        std::string tok =
+            query.substr(start, amp == std::string::npos ? std::string::npos : amp - start);
+        if (!tok.empty()) {
+            size_t      eq  = tok.find('=');
+            std::string key = tok.substr(0, eq);
+            std::string val = eq == std::string::npos ? "true" : tok.substr(eq + 1);
+            if (key == "banner") {
+                Value       v;
+                std::string perr;
+                if (!parseValue(val, Kind::Bool, v, perr)) {
+                    err = std::string(scheme) + ": banner wants on or off: " + perr;
+                    return nullptr;
+                }
+                banner    = v.b();
+                bannerSet = true;
+            } else {
+                err = std::string(scheme) + ": unknown option '" + key +
+                      "'. The only option is banner (greet each caller)";
+                return nullptr;
+            }
+        }
+        if (amp == std::string::npos) break;
+        start = amp + 1;
     }
 
     // A bare PORT is a LISTEN; HOST:PORT is a CALL. The colon is the whole of the
@@ -197,7 +238,14 @@ static std::unique_ptr<ByteStream> makeTcpStream(const std::string& rest,
         }
         auto l = platform::listenTcp(port, err);
         if (!l) return nullptr;
-        return std::make_unique<TcpListenStream>(std::move(l), spec);
+        return std::make_unique<TcpListenStream>(std::move(l), spec, banner);
+    }
+
+    // A dial-out is the CALLER: there is nobody for us to greet.
+    if (bannerSet) {
+        err = std::string(scheme) + ": banner greets callers to a listening port (" + scheme +
+              ":PORT?banner), not a call out to " + rest;
+        return nullptr;
     }
 
     std::string host = rest.substr(0, c);
@@ -500,7 +548,8 @@ std::unique_ptr<ByteStream> resolveEndpoint(const std::string& spec, std::string
     }
 
     // ---- socket: -- a RAW byte pipe: listen on a port, or call out to a host ----
-    if (spec.rfind("socket:", 0) == 0) return makeTcpStream(spec.substr(7), spec, "socket", err);
+    if (spec.rfind("socket:", 0) == 0)
+        return makeTcpStream(spec.substr(7), spec, "socket", /*bannerDefault=*/false, err);
 
     // ---- telnet: -- like socket:, but speaks the Telnet protocol (host/telnet_stream.h) ----
     //
@@ -510,9 +559,11 @@ std::unique_ptr<ByteStream> resolveEndpoint(const std::string& spec, std::string
     // role (we offer to echo); a dial-out is the client role. socket: stays raw for
     // machine-to-machine CONNECT and the mirror.
     if (spec.rfind("telnet:", 0) == 0) {
-        auto inner = makeTcpStream(spec.substr(7), spec, "telnet", err);
+        auto inner = makeTcpStream(spec.substr(7), spec, "telnet", /*bannerDefault=*/true, err);
         if (!inner) return nullptr;
-        const bool server = spec.substr(7).rfind(':') == std::string::npos;  // bare PORT = listen
+        std::string body = spec.substr(7);
+        body             = body.substr(0, body.find('?'));  // the options are not the address
+        const bool server = body.rfind(':') == std::string::npos;  // bare PORT = listen
         return std::make_unique<TelnetStream>(std::move(inner), spec, server);
     }
 

@@ -113,6 +113,10 @@ public:
     // the log file). Move-and-clear, like the chips.
     std::vector<std::string> drainLog() override;
 
+    // The connect banner is the terminal server's, not guest traffic: it goes straight
+    // to the wrapped socket and never into the capture.
+    void greet(const std::string& owner) override { inner_->greet(owner); }
+
 private:
     // --- formatting (all const: they only touch the mutable logging state below, so
     // status() can keep events in time order by flushing pending data before a pin) ---
