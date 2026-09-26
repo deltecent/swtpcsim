@@ -308,14 +308,25 @@ There *was* such a gate. It never once fired, because nothing in the simulator e
 
 `CONNECT <id>:<unit> <endpoint>`. The **monitor** knows this grammar and no board is permitted to, which is why `CONNECT mps0:tty serial:/dev/tty.usbserial-AL009KFH` needed **not one line of code in the MP-S**.
 
-| Endpoint | What it is |
-|---|---|
-| `console` | The host keyboard and screen. Exactly one unit may hold it. |
-| `null` | A DB-25 with nothing behind it. Writes vanish; reads are quiet. Not an error — an unconnected 6850 works fine and talks to nobody. |
-| `loopback` | TX jumpered to RX — **and RTS→CTS, DTR→DCD/DSR**, exactly like the loopback plug in the drawer. The one endpoint that can test modem control with no hardware. |
-| `socket:2323` | **Listen.** One client at a time; the listener survives a disconnect, so the next telnet is the phone ringing again. **A client connecting *is* carrier appearing.** |
-| `socket:host:port` | **Call out.** Non-blocking: a session still being established is a phone still ringing, and the card correctly sees no carrier yet. |
-| `serial:/dev/tty…` | A **real serial port**, and the one place where the pins are the pins. The card programs its baud and frame; `SET mps0:tty cts=wired` and the far end can genuinely stop your transmitter. |
+**The list of endpoints is not copied here.** It is the User Manual's (the serial chapter) and
+`HELP CONNECT`'s, and `HELP` prints it from `endpointHelp()` — the same function the resolver
+answers to. What belongs here is why a few of them are shaped the way they are:
+
+- **`null` is a DB-25 with nothing behind it**, not an error. An unconnected 6850 works fine and
+  talks to nobody.
+- **`loopback` jumpers TX to RX — and RTS→CTS, DTR→DCD/DSR**, exactly like the loopback plug in
+  the drawer. It is the one endpoint that can test modem control with no hardware.
+- **A client connecting to a listening `socket:` or `telnet:` *is* carrier appearing.** One
+  client at a time; the listener survives a disconnect, so the next caller is the phone ringing
+  again. A call out is non-blocking, and a session still being established is a phone still
+  ringing: the board correctly sees no carrier yet.
+- **`socket:` is raw and `telnet:` negotiates**, and they are two endpoints rather than an option
+  because they are for different far ends. A program, or another machine, wants the guest's
+  bytes and nothing else. A person with a `telnet` client needs the echo and line-mode
+  handshake, or every key appears twice. `telnet:` also greets its caller by default, and
+  `socket:` does not, because a banner is data to a machine on the far end.
+- **`serial:` is the one place where the pins are the pins.** The board programs its baud and
+  frame, and with `SET mps0:tty cts=wired` the far end can genuinely stop your transmitter.
 
 A device that is not there does **not** silently become a `NullStream` — it is an error, and `serial:` lists the ports that *are* on the host, because a cable that enumerated under a different name is ten minutes of a person doubting the simulator.
 

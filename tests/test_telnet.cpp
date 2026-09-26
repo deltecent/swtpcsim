@@ -7,6 +7,8 @@
 // Like the socket sections in test_lines.cpp / test_modemline.cpp, this touches the
 // kernel TCP stack, so every state change is waited for by WALL CLOCK (waitFor).
 
+#include "core/machine.h"
+#include "core/version.h"
 #include "host/endpoint.h"
 #include "host/stream.h"
 #include "platform/socket.h"
@@ -162,5 +164,158 @@ void test_telnet() {
         CHECK(err.find("telnet:") != std::string::npos, "...and the error names telnet:");
         err.clear();
         CHECK(resolveEndpoint("telnet:notaport", err) == nullptr, "telnet: with a bad port refuses");
+    }
+
+    // -----------------------------------------------------------------------
+    // THE CONNECT BANNER. A LISTEN that greets owes each caller one line --
+    // "Connected to swtpcsim ... (uio0:serial) on port N" -- and pays it when greet()
+    // names the line. telnet: greets by default (a person is calling), behind its
+    // option negotiation and telnet-encoded; socket: does not unless asked (it is the
+    // raw pipe another machine dials, where a banner would be data in the far guest).
+    // -----------------------------------------------------------------------
+    auto bannerFor = [](const std::string& owner, uint16_t port) {
+        return std::string("Connected to ") + versionString() + " (" + owner + ") on port " +
+               std::to_string(port) + "\r\n";
+    };
+
+    // Connect a raw client to `spec` (which listens on `port`), pump until it is
+    // accepted and whatever the stream sends unprompted has landed, greet as `owner`,
+    // and return every byte the client received.
+    auto callIn = [](ByteStream* stream, uint16_t port, const std::string& owner,
+                     std::unique_ptr<platform::TcpConn>& client) {
+        std::string err, got;
+        client = platform::connectTcp("127.0.0.1", port, err);
+        waitFor([&] { if (client) client->poll();
+                      stream->pump();
+                      stream->greet(owner);
+                      if (client) got += drain(client.get()); },
+                [&] { return client && client->established() && stream->status().carrier &&
+                             got.find('\n') != std::string::npos; });
+        // One more round for anything still in flight (the quiet cases wait it out).
+        for (int i = 0; i < 5; ++i) {
+            if (client) client->poll();
+            stream->pump();
+            stream->greet(owner);
+            if (client) got += drain(client.get());
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        return got;
+    };
+
+    SECTION("banner: telnet:PORT greets each caller, after the negotiation");
+    {
+        std::string err;
+        uint16_t    port   = freePort();
+        auto        stream = resolveEndpoint("telnet:" + std::to_string(port), err);
+        CHECK(stream != nullptr, ("telnet:PORT resolves: " + err).c_str());
+        if (stream) {
+            std::unique_ptr<platform::TcpConn> client;
+            std::string got = callIn(stream.get(), port, "uio0:serial", client);
+            const std::string wantNeg = {(char)IAC, (char)WILL, (char)OPT_ECHO,
+                                         (char)IAC, (char)WILL, (char)OPT_SGA,
+                                         (char)IAC, (char)DO,   (char)OPT_SGA};
+            CHECK(got == wantNeg + bannerFor("uio0:serial", port),
+                  "the negotiation, then the banner naming the line and the port -- once");
+            CHECK(ByteStream::greetingsDue() == 0, "nothing is owed once the banner is sent");
+
+            // The caller hangs up; the NEXT caller is greeted again.
+            client.reset();
+            waitFor([&] { stream->pump(); }, [&] { return !stream->status().carrier; });
+            got = callIn(stream.get(), port, "uio0:serial", client);
+            CHECK(got == wantNeg + bannerFor("uio0:serial", port), "a new caller is greeted afresh");
+        }
+    }
+
+    SECTION("banner: telnet:PORT?banner=off and plain socket:PORT stay quiet");
+    {
+        std::string err;
+        uint16_t    port   = freePort();
+        auto        stream = resolveEndpoint("telnet:" + std::to_string(port) + "?banner=off", err);
+        CHECK(stream != nullptr, ("telnet:PORT?banner=off resolves: " + err).c_str());
+        CHECK(stream && stream->describe() == "telnet:" + std::to_string(port) + "?banner=off",
+              "describe() round-trips the option (SHOW / CONFIG SAVE)");
+        if (stream) {
+            std::unique_ptr<platform::TcpConn> client;
+            std::string got = callIn(stream.get(), port, "uio0:serial", client);
+            CHECK(got.find("Connected") == std::string::npos, "?banner=off: no banner");
+            CHECK(ByteStream::greetingsDue() == 0, "...and none is owed");
+        }
+
+        port   = freePort();
+        stream = resolveEndpoint("socket:" + std::to_string(port), err);
+        CHECK(stream != nullptr, ("socket:PORT resolves: " + err).c_str());
+        if (stream) {
+            std::unique_ptr<platform::TcpConn> client;
+            std::string got = callIn(stream.get(), port, "uio0:serial", client);
+            CHECK(got.empty(), "a raw socket:PORT sends nothing of its own by default");
+            CHECK(ByteStream::greetingsDue() == 0, "...and owes nothing");
+        }
+    }
+
+    SECTION("banner: socket:PORT?banner greets raw");
+    {
+        std::string err;
+        uint16_t    port   = freePort();
+        auto        stream = resolveEndpoint("socket:" + std::to_string(port) + "?banner", err);
+        CHECK(stream != nullptr, ("socket:PORT?banner resolves: " + err).c_str());
+        if (stream) {
+            std::unique_ptr<platform::TcpConn> client;
+            std::string got = callIn(stream.get(), port, "uio0:serial", client);
+            CHECK(got == bannerFor("uio0:serial", port), "exactly the banner, no telnet bytes");
+        }
+    }
+
+    SECTION("banner: a caller who leaves before the banner is owed nothing");
+    {
+        std::string err;
+        uint16_t    port   = freePort();
+        auto        stream = resolveEndpoint("socket:" + std::to_string(port) + "?banner", err);
+        if (stream) {
+            auto client = platform::connectTcp("127.0.0.1", port, err);
+            waitFor([&] { if (client) client->poll(); stream->pump(); },
+                    [&] { return stream->status().carrier; });
+            CHECK(ByteStream::greetingsDue() == 1, "an accepted caller is owed the banner");
+            client.reset();
+            waitFor([&] { stream->pump(); }, [&] { return !stream->status().carrier; });
+            CHECK(ByteStream::greetingsDue() == 0, "...and forgiven it on hanging up first");
+        }
+        CHECK(stream != nullptr, ("socket:PORT?banner resolves: " + err).c_str());
+    }
+
+    SECTION("banner: grammar -- a dial-out cannot greet, an unknown option refuses");
+    {
+        std::string err;
+        CHECK(resolveEndpoint("socket:localhost:2323?banner", err) == nullptr,
+              "?banner on a dial-out refuses");
+        CHECK(err.find("listening") != std::string::npos, "...and says it is for a listener");
+        err.clear();
+        CHECK(resolveEndpoint("telnet:2323?bogus", err) == nullptr, "an unknown option refuses");
+        CHECK(err.find("bogus") != std::string::npos, "...and names it");
+        err.clear();
+        CHECK(resolveEndpoint("telnet:2323?banner=maybe", err) == nullptr,
+              "banner wants a boolean");
+    }
+
+    // THE MACHINE NAMES THE LINE. A board resolves its own endpoint and never tells
+    // the stream which line it is; Machine::pump() does, for any stream owing a banner.
+    SECTION("banner: Machine::pump() names the board line in the banner");
+    {
+        std::string err;
+        Machine     m;
+        Board*      sio = m.add("680uio", "uio0", err);
+        CHECK(sio != nullptr, ("add a 680uio: " + err).c_str());
+        uint16_t port = freePort();
+        CHECK(sio && sio->connect("serial", "telnet:" + std::to_string(port), err),
+              ("CONNECT uio0:serial telnet:PORT: " + err).c_str());
+        if (sio) {
+            auto        client = platform::connectTcp("127.0.0.1", port, err);
+            std::string got;
+            waitFor([&] { if (client) client->poll();
+                          m.pump();
+                          if (client) got += drain(client.get()); },
+                    [&] { return got.find('\n') != std::string::npos; });
+            CHECK(got.find(bannerFor("uio0:serial", port)) != std::string::npos,
+                  "the caller is greeted as uio0:serial, named by the machine");
+        }
     }
 }

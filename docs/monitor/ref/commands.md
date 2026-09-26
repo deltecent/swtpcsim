@@ -694,10 +694,10 @@ the guest cannot see it: the 6850 clocks bytes the same way whether the wire end
 at your terminal, a telnet session, a real RS-232 port, or nothing at all. No board
 in the machine knows what any of these words mean.
 
-Endpoints: console | null | loopback | scripted | socket:PORT | socket:HOST:PORT |
-telnet:PORT | telnet:HOST:PORT | serial:DEVICE | in:PATH | out:PATH |
-terminal[?emulation=vt100&size=80x24] | printer:QUEUE | <endpoint>|FILE |
-<endpoint>|socket:PORT
+Endpoints: console | null | loopback | scripted | socket:PORT[?banner] | socket:HOST:PORT |
+telnet:PORT[?banner=off] | telnet:HOST:PORT | serial:DEVICE | in:PATH |
+out:PATH | terminal[?emulation=vt100&size=80x24] | printer:QUEUE |
+<endpoint>|FILE | <endpoint>|socket:PORT
 
 
 ```
@@ -706,11 +706,13 @@ null        a cable to nowhere: writes vanish, reads never yield a byte
 loopback    the unit's own transmit wired back to its receive, for testing
 scripted    a terminal with a caller in place of a human -- what the MCP tools
             and the test suite type into. No tty need exist.
-socket:     PORT alone LISTENS: that is the telnet-in case. HOST:PORT CALLS OUT.
-            A RAW pipe -- no echo, no protocol.
+socket:     PORT alone LISTENS; HOST:PORT CALLS OUT. A RAW pipe -- no echo, no
+            protocol -- for a PROGRAM at the far end (another machine, a
+            transfer). ?banner greets each caller to a listening port.
 telnet:     the same, but speaks the Telnet protocol, so a stock `telnet` client
             gets the terminal-server handshake: no double echo, keys sent one at a
-            time. Use it in place of socket: when a HUMAN telnets in to a BBS.
+            time. Use it when a PERSON telnets in. A listening port greets each
+            caller with the machine, line and port; ?banner=off stops it.
 serial:     a real port on this host. It is opened at 9600 8N1 and then
             immediately re-programmed by the board, which is the only thing that
             knows what it is strapped to.

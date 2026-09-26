@@ -161,11 +161,32 @@ public:
     // Move-and-clear in the override, like the chips do (chips/uart1602.h).
     virtual std::vector<std::string> drainLog() { return {}; }
 
+    // A CALLER JUST ANSWERED; IF WE OWE THEM A BANNER, SAY IT NOW, AS `owner`. The
+    // terminal server's greeting on a listening `telnet:`/`socket:` port (host/tcp.h):
+    // "Connected to swtpcsim ... (uio0:serial) on port 2323". It goes to the CALLER only --
+    // the guest never sees it; it is the terminal server talking, not the board.
+    //
+    // The stream cannot name its own line: the board resolved it, and the board never
+    // tells a stream what it is plugged into. So the MACHINE does, after every pump,
+    // but only while greetingsDue() says some listener has a caller waiting for one
+    // (Machine::pump) -- one int compare per slice otherwise. Default: nothing owed.
+    // A decorator (tee, mirror, telnet) forwards it to the line it wraps.
+    virtual void greet(const std::string& owner) { (void)owner; }
+
+    // How many listeners, machine-wide, have a caller still owed a banner.
+    static int greetingsDue() { return greetingsDue_; }
+
     uint8_t readByte() {
         uint8_t b = 0;
         return read(&b, 1) == 1 ? b : 0;
     }
     void writeByte(uint8_t b) { write(&b, 1); }
+
+protected:
+    // Kept by the owing stream: raised when a caller answers, lowered when the banner
+    // goes out or the caller leaves first. Single-threaded, like every stream -- only
+    // the run loop pumps and greets (DESIGN.md: no second thread touches the Machine).
+    inline static int greetingsDue_ = 0;
 };
 
 // ---------------------------------------------------------------------------

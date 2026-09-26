@@ -1,6 +1,7 @@
 #include "host/tcp.h"
 
 #include "core/debuglog.h"
+#include "core/version.h"
 
 #include <ostream>
 
@@ -69,6 +70,7 @@ void TcpStream::pump() {
     if (conn_->closed()) {
         conn_.reset();
         tx_.clear();  // ...but nothing more is going OUT down a dead line
+        dropGreeting();  // a caller who left before the banner is owed nothing
     }
 
     // Trace the carrier edge, and only the edge (see wasUp_). A client answering the
@@ -111,6 +113,7 @@ void TcpStream::setControl(const LineControl& c) {
     if (sawDtr_ && !c.dtr && conn_) {
         conn_->close();
         conn_.reset();
+        dropGreeting();
     }
 
     // RTS goes nowhere on a socket: there is no wire to raise. TCP does its own flow
@@ -118,11 +121,45 @@ void TcpStream::setControl(const LineControl& c) {
 }
 
 // ---------------------------------------------------------------------------
+// The connect banner. Owed on accept, paid by the machine's next pump (which is the
+// only thing that knows which board line this is), and forgiven if the caller leaves
+// first. greetingsDue_ counts the unpaid ones, so the machine looks only when it must.
+// ---------------------------------------------------------------------------
+void TcpStream::oweGreeting(uint16_t port) {
+    if (!greetDue_) ++greetingsDue_;
+    greetDue_  = true;
+    greetPort_ = port;
+}
+
+void TcpStream::dropGreeting() {
+    if (greetDue_) --greetingsDue_;
+    greetDue_ = false;
+}
+
+std::string TcpStream::takeGreeting(const std::string& owner) {
+    if (!greetDue_) return {};
+    dropGreeting();
+    if (!conn_ || !conn_->established()) return {};
+    std::string line = std::string("Connected to ") + versionString();
+    if (!owner.empty()) line += " (" + owner + ")";
+    line += " on port " + std::to_string(greetPort_) + "\r\n";
+    return line;
+}
+
+void TcpStream::greet(const std::string& owner) {
+    std::string line = takeGreeting(owner);
+    if (!line.empty()) write((const uint8_t*)line.data(), line.size());
+}
+
+// ---------------------------------------------------------------------------
 // Answering the phone. The listener stays up for the NEXT call, always.
 // ---------------------------------------------------------------------------
 void TcpListenStream::refresh() {
     if (conn_) return;  // one client at a time. A second caller gets a busy signal.
-    if (auto c = listener_->accept()) conn_ = std::move(c);
+    if (auto c = listener_->accept()) {
+        conn_ = std::move(c);
+        if (banner_) oweGreeting(listener_->port());
+    }
 }
 
 // Dialling out. If the call failed, it stays failed -- we do not redial in a loop,

@@ -25,9 +25,9 @@ This table is exhaustive. There are no others.
 | `console` | the host terminal — your keyboard and your screen. |
 | `null` | nowhere. Writes vanish. Reads never come. |
 | `loopback` | itself. What the guest writes comes straight back as a read. |
-| `socket:PORT` | **LISTENS** on that TCP port, as a raw pipe. |
+| `socket:PORT` | **LISTENS** on that TCP port, as a raw pipe. Add `?banner` to greet each caller (see *The connect banner*, below). |
 | `socket:HOST:PORT` | **CALLS OUT** to that host and that port, as a raw pipe. |
-| `telnet:PORT` | **LISTENS** like `socket:PORT`, but speaks the **Telnet protocol** — so a `telnet` client behaves: no double echo, one key at a time. This is the telnet-in case for a **person**. |
+| `telnet:PORT` | **LISTENS** like `socket:PORT`, but speaks the **Telnet protocol** — so a `telnet` client behaves: no double echo, one key at a time. This is the telnet-in case for a **person**. Greets each caller; `?banner=off` stops that. |
 | `telnet:HOST:PORT` | **CALLS OUT** like `socket:HOST:PORT`, taking the telnet client's part. |
 | `serial:DEVICE` | a real serial port on this host. |
 | `in:PATH` | a host file, read-only — a **paper-tape reader**. The file's bytes feed the board. |
@@ -62,12 +62,12 @@ own, a host and a port is a place you go. Nothing else about the endpoint change
 
 ## Telnetting into the guest
 
-Wire a unit to a listening socket, and the guest has a serial port with a terminal on the
-end of it. That the terminal is your telnet client, several processes away, is not something
-the guest can discover.
+Wire a unit to a listening `telnet:` port, and the guest has a serial port with a terminal on
+the end of it. That the terminal is your telnet client, several processes away, is not
+something the guest can discover.
 
 ```
-swtpcsim> CONNECT uio0:serial socket:2323
+swtpcsim> CONNECT uio0:serial telnet:2323
 swtpcsim> RUN
 ```
 
@@ -75,37 +75,52 @@ Then, from another terminal on your machine:
 
 ```
 $ telnet localhost 2323
+Connected to swtpcsim 0.0.1 (uio0:serial) on port 2323
 ```
 
 The guest is now talking to that window. Your first terminal still has the monitor and
 `^E` in it. This is how you give a machine two terminals, and it is how you drive a program
 that wants a console that is not the one you are sitting at.
 
-### `telnet:` when a person is at the other end
+### `socket:` or `telnet:`
 
-A `socket:` is a raw pipe: it moves bytes and negotiates nothing. That is right when the far
-end is another program, but when a **person** points `telnet` (or `nc`) at it, their terminal
-is left in its own default — it echoes every key locally *and* the guest echoes it back, so
-each character appears twice, and Enter arrives as a whole line with its carriage return
-turned into a line feed. The fix is not on your keyboard; it is to let the two ends negotiate,
-which is what the Telnet protocol is for.
+Both listen on a port (or call out to `HOST:PORT`), both raise carrier when a caller connects
+and drop it when they leave, and the guest cannot tell them apart. They differ in what they
+say to the far end:
 
-`telnet:` does that. It is `socket:` in every way but one — it speaks Telnet, offering to echo
-and to send a character at a time, so a stock client drops its own echo and stops buffering
-lines the moment it connects:
+| | `socket:` | `telnet:` |
+|---|---|---|
+| Who is at the far end | another program or another machine | a **person** with `telnet` or `nc` |
+| On the wire | the guest's bytes and nothing else | Telnet: it negotiates echo and one-key-at-a-time with the client |
+| What the person sees | each key twice (their terminal echoes it, then the guest does), and Enter sent as a whole line | one echo, from the guest, and each key sent as it is pressed |
+| Greeting | none, unless you add `?banner` | one line naming the machine, the board line and the port; `?banner=off` stops it |
+
+So: `telnet:` when a person types at the guest. `socket:` when a program is at the far end —
+one swtpcsim wired to another, a file transfer, a tool that speaks raw bytes, or a line you
+mirror.
+
+A raw `socket:` shows its problem the moment a person uses it: a stock `telnet` client, left
+in its own defaults, echoes every key locally *and* the guest echoes it back, so each
+character appears twice, and Enter arrives as a whole line with its carriage return turned
+into a line feed. The fix is not on your keyboard. The two ends have to negotiate, and that is
+what the Telnet protocol is for.
+
+### The connect banner
+
+A `telnet:PORT` line says hello to each person who connects, before the guest says anything —
+the `Connected to ...` line above. It names the build, the board line you reached and the
+port, so you know you have the right machine and the right line. Only the caller sees it. The
+guest does not, and nothing reaches the board. To turn it off, add `?banner=off`:
 
 ```
-swtpcsim> CONNECT uio0:serial telnet:2323
-swtpcsim> RUN
+swtpcsim> CONNECT uio0:serial telnet:2323?banner=off
 ```
 
-```
-$ telnet localhost 2323
-```
-
-Now the session reads cleanly: one echo, from the guest, and each key reaches it as you press
-it. Reach for `telnet:` whenever a human telnets into a BBS or a monitor, and keep `socket:`
-for wiring one machine to another or for a line you mirror.
+A `socket:PORT` line has no banner, because another machine is often at the far end, and it
+would take the banner as data. If a person is calling a raw socket and you want the greeting,
+add `?banner`: `CONNECT uio0:serial socket:2323?banner`. The banner is only for a port that
+listens. A line that calls out (`socket:HOST:PORT`, `telnet:HOST:PORT`) is the caller itself,
+so `?banner` there is refused.
 
 ## A terminal in its own window
 
