@@ -376,7 +376,10 @@ Json toolList() {
                    "`monitor` command advances the real PC without updating them, and `steps` "
                    "restarts at zero on the next `run`, so it can go backwards between runs. "
                    "`generation` is the only field guaranteed to keep climbing, so use it (not "
-                   "`steps`) to tell 'still advancing' from 'stuck on the same slice.' Because it "
+                   "`steps`) to tell 'still advancing' from 'stuck on the same slice.' "
+                   "`in_flight: false` means nothing is dispatched at this instant, NOT that the "
+                   "queue is drained -- the worker clears one request before picking up the next, "
+                   "and a poll can land in that gap. Because it "
                    "can land ahead of requests queued before it, don't sequence it with the "
                    "rest of a script; poll it, standalone, whenever you need to know if the "
                    "server is still alive.",
@@ -1827,9 +1830,11 @@ int runMcp(Machine& m, std::istream& in, std::ostream& out, const std::string& m
     // below over a queue -- except `notifications/cancelled`, which it acts on
     // immediately against the in-flight request's id instead of queuing, since queuing it
     // would defeat the entire point: it would just wait behind the very call it is meant
-    // to interrupt. The reader thread touches stdin, `pending`, `eof`, `currentId` and
-    // `haveCurrentId` ONLY -- never the Machine, never `out` -- so a tool call's existing
-    // single-threaded access to either needs no change at all.
+    // to interrupt. The reader thread never touches the Machine -- that is the line this
+    // split rests on, and a tool call's existing single-threaded access to it needs no
+    // change at all. Besides stdin it touches `pending`, `eof`, `currentId` and
+    // `haveCurrentId` under `mu`, and, since #490 gave it `status` to answer, the published
+    // snapshot under `sess.statusMu` and `out` itself through `safeReply` under `outMu`.
     std::mutex              mu;
     std::condition_variable cv;
     std::deque<QueuedMsg>   pending;
