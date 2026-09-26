@@ -231,11 +231,16 @@ Two lines and an include, in `src/boards/registry.cpp`:
 #include "../../examples/boards/lamp/lamp.h"
 
 // ...in boardTypes():
-{"lamp", "A write-only latch: a store lights eight LEDs. The Developer Guide builds this"},
+{"lamp", "Eight-LED output latch (the Developer Guide's example)",
+         "A write-only latch: a store lights eight LEDs. The Developer Guide builds this"},
 
 // ...in makeBoard():
 if (type == "lamp") return std::make_unique<LampBoard>();
 ```
+
+The row is the type name, a one-line summary for the `SHOW BOARDS` catalog (keep it short
+enough to fit the column -- a test checks every row fits 78 columns), and the full description
+that `SHOW BOARD <type>` prints.
 
 That is all. `registry.h` promises *"adding a board type is one line here and nothing anywhere
 else"*, and it means it.
@@ -249,19 +254,19 @@ else"*, and it means it.
 $ cmake --build build -j
 ```
 
-The board is now in the catalogue. `SHOW BOARDS` lists every type with its description;
+The board is now in the catalogue. `SHOW BOARDS` lists every type with its one-line summary;
 name one to see its settings, their help text and their legal values -- and nobody wrote a
 line of code to put it there:
 
 ```
 swtpcsim> SHOW BOARDS
-  TYPE        DESCRIPTION
-  ----------  ----------------------------------------------------------------
+  TYPE      DESCRIPTION
+  --------  ------------------------------------------------------------------
   ...
-  lamp        A write-only latch: a store lights eight LEDs. The Developer
-              Guide builds this
+  lamp      Eight-LED output latch (the Developer Guide's example)
+  ...
 
-  SHOW BOARD <type> for a board's properties
+  SHOW BOARD <type> for a board's properties (add UNITS for just the units)
 
 swtpcsim> SHOW BOARD lamp
   lamp  A write-only latch: a store lights eight LEDs. The Developer Guide

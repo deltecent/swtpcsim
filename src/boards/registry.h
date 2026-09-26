@@ -13,7 +13,8 @@ namespace swtpc {
 
 struct BoardType {
     std::string name;
-    std::string description;
+    std::string summary;      // one line, for the SHOW BOARDS catalog and the index tables
+    std::string description;  // the full paragraph, for SHOW BOARD <type>
 };
 
 std::vector<BoardType> boardTypes();

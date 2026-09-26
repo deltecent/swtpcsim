@@ -3143,8 +3143,8 @@ bool Monitor::exec(const std::string& line, std::ostream& out) {
         if (sub == "BOARDS" || sub == "BOARD") {
             if (tooMany(4)) return true;
             // The board catalog -- what you can ADD. Plural BOARDS is the whole list, one
-            // aligned row per type with the description WRAPPED inside its column; singular
-            // BOARD <type> drills into one: its description, then its properties. Either
+            // aligned row per type with its one-line summary; singular BOARD <type> drills
+            // into one: its full description, then its properties. Either
             // spelling works with or without a name -- the presence of the name decides.
             // This lives beside SHOW MACHINES: both answer "what can I build?".
             const auto types = boardTypes();
@@ -3301,22 +3301,24 @@ bool Monitor::exec(const std::string& line, std::ostream& out) {
                 return true;
             }
 
-            // The catalog. Name column sized to the data, description wrapped beneath it.
+            // The catalog, alphabetical -- registry order is build order, which no reader
+            // can search. Name column sized to the data, then the one-line summary -- the
+            // full description is SHOW BOARD <type>'s, so the list stays one screen.
+            auto sorted = types;
+            std::sort(sorted.begin(), sorted.end(),
+                      [](const BoardType& x, const BoardType& y) { return x.name < y.name; });
             size_t wName = 4;  // "TYPE"
-            for (const auto& t : types) wName = std::max(wName, t.name.size());
+            for (const auto& t : sorted) wName = std::max(wName, t.name.size());
             const size_t descCol = 2 + wName + 2;
 
             std::snprintf(buf, sizeof buf, "  %-*s  %s", (int)wName, "TYPE", "DESCRIPTION");
             out << buf << "\n";
             out << "  " << std::string(wName, '-') << "  "
                 << std::string(width - descCol, '-') << "\n";
-            for (const auto& t : types) {
-                auto desc = wrapText(t.description, width - descCol);
+            for (const auto& t : sorted) {
                 std::snprintf(buf, sizeof buf, "  %-*s  %s", (int)wName, t.name.c_str(),
-                              desc[0].c_str());
+                              t.summary.c_str());
                 out << buf << "\n";
-                for (size_t i = 1; i < desc.size(); ++i)
-                    out << std::string(descCol, ' ') << desc[i] << "\n";
             }
             out << "\n  SHOW BOARD <type> for a board's properties"
                    " (add UNITS for just the units)\n";
