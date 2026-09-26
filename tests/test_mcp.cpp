@@ -682,7 +682,7 @@ void test_mcp() {
         req(R"({"name":"run","arguments":{"timeout_ms":500}})");   // stale-flag check
 
         std::thread interruptor([] {
-            std::this_thread::sleep_for(std::chrono::milliseconds(150));
+            std::this_thread::sleep_for(std::chrono::milliseconds(700));
             std::raise(SIGINT);
         });
 
@@ -728,7 +728,7 @@ void test_mcp() {
             req(R"({"name":"run","arguments":{"timeout_ms":3000}})");  // the call under test
 
             std::thread interruptor([] {
-                std::this_thread::sleep_for(std::chrono::milliseconds(200));
+                std::this_thread::sleep_for(std::chrono::milliseconds(900));
                 std::raise(SIGINT);
             });
             auto rep = runScript(m, s.str());
