@@ -307,15 +307,14 @@ id   = "mem0"
   [[board.region]]
   type  = "rom"
   at    = 0xE000
-  size  = 1024
   mount = "builtin:swtbug" # a file path, or builtin:<name>
 ```
 
 | Key | |
 |---|---|
 | `type` | **required.** `ram` or `rom` |
-| `at` | the address it decodes. **Hex** |
-| `size` | how big. **Decimal**; `K` and `M` suffixes work |
+| `at` | the address where the region starts. **Hex** |
+| `size` | the size of a `ram` region. **Decimal**. You can use the `K` and `M` suffixes. A `rom` region takes its size from its image, rounded up to a page, so it ignores `size` |
 | `mount` | a ROM image: a file path, or `builtin:<name>` |
 
 (A size with a suffix is written as a string — `size = "56K"` — because `56K` is not a number
@@ -323,10 +322,10 @@ TOML will accept bare. A plain count needs no quotes: `size = 256`.)
 
 ### An empty socket
 
-**A `rom` region with no `mount` is an empty socket.** It decodes nothing, and reads there float
-to `FF` — because that is what a bus with nobody driving it does. It is not zeros, and it is not
-an error. It is an unpopulated socket on a card that has one, which is a thing a real machine
-could be, and software that reads it gets `FF`.
+**A `rom` region with no `mount` is an empty socket**, even when it has a `size`. It decodes
+nothing, and reads there float to `FF` — because that is what a bus with nobody driving it does.
+It is not zeros, and it is not an error. It is an unpopulated socket on a board that has one,
+which is a thing a real machine could be, and software that reads it gets `FF`.
 
 ## `[[board.drive]]` — disks
 

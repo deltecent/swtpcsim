@@ -47,8 +47,13 @@ bool MemoryBoard::addRegion(Region r, std::string& err) {
     if (r.kind == RegionKind::Rom) {
         // A rom region with no `mount` is an EMPTY SOCKET, and that is a legal
         // thing for a card to have: a 4-socket PROM board with two chips in it is
-        // an ordinary machine. It decodes nothing (size stays 0), so those pages
-        // float -- and it still gets a unit name, so you can MOUNT a chip into it.
+        // an ordinary machine. It decodes nothing, so those pages float -- and it
+        // still gets a unit name, so you can MOUNT a chip into it.
+        //
+        // A rom's extent comes from its IMAGE (loadRomRegion), so a `size` on one is
+        // ignored. Without this an empty socket given a `size` decoded that range and
+        // answered 00 from the store, where the bus should have floated FF (#576).
+        if (r.mount.empty()) r.size = 0;
     } else {
         if (r.size == 0) {
             err = "a ram region needs `size`";
@@ -270,6 +275,7 @@ void MemoryBoard::power() {
     fillRam();
     for (size_t i = 0; i < regions_.size(); ++i) {
         if (regions_[i].kind != RegionKind::Rom) continue;
+        if (regions_[i].mount.empty()) continue;  // an empty socket: no chip to reload (#576)
         std::string err;
         if (!loadRomRegion(i, err)) log_.push_back("power: " + err);
     }
