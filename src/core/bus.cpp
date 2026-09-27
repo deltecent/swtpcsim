@@ -132,9 +132,8 @@ void Bus::reportUnclaimed(const BusCycle& c) {
     if (unclaimedPolicy_ == Unclaimed::Silent) return;
 
     const bool write = c.isWrite();
-    std::bitset<65536>& seen = write ? warnedWrite_ : warnedRead_;
-    if (seen.test(c.addr)) return;  // once per address+direction per run -- see resetUnclaimedWarnings()
-    seen.set(c.addr);
+    // once per address+direction per run -- see resetUnclaimedWarnings()
+    if (!warned_.insert((uint32_t(write) << 16) | c.addr).second) return;
 
     char buf[160];
     if (write)
