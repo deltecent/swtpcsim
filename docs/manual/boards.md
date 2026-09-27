@@ -56,6 +56,7 @@ Grouped by what they do — the same order as the sections below.
 | Type | What it is |
 |---|---|
 | `mpt` | SWTPC MP-T — a 6820 PIA and an MK5009 time base: an interrupt every 1 µs to 1 hour, and an input port |
+| `mpid` | SWTPC MP-ID — the S/09's interface driver: a 6840 timer counting the power line, and a PIA printer port |
 
 ---
 
@@ -311,6 +312,54 @@ The A side is a buffered eight-bit input port with a strobe, like half an MP-L. 
 strobes CA1, setting control A's bit 7 (and IRQ, if enabled). The next byte waits until the
 program reads the A data register. The "data accepted" handshake line back to the sender, CA2,
 is not modeled; the endpoint paces itself.
+
+## `mpid` — SWTPC MP-ID interface driver
+
+The MP-ID sits in every SWTPC 6809 system: it drives the I/O bus, and it carries a **6840
+programmable timer** and a **6820 PIA**. The built-in **`swtpc09`** machine has one at `E080`.
+Two I/O ports of the window are the board's:
+
+| Addresses | What is there |
+|---|---|
+| `E080`–`E08F` | the PIA: data/direction A, control A, data/direction B, control B, mirrored |
+| `E090`–`E09F` | the 6840: its eight registers, mirrored once |
+
+**This is FLEX9's timer.** At boot FLEX looks for a 6840 at `E090`. Without the board it prints
+`Timer not available.`, and `TIME` has nothing to count with. With it, `TIME CAT` runs `CAT` and
+then prints `Elapsed time was` and the seconds.
+
+The properties:
+
+- **`base`** — where the PIA is. It is port 8 of the `E000` I/O block (`E080`, the default), or of
+  the `C000` block (`C080`). The 6840 is always `$10` above it.
+- **`line_hz`** — the power line, `60` (the default) or `50`.
+
+### The line clock
+
+The real board counts the AC power line. A pulse comes on each half of the wave, so a 60 Hz
+line gives **120 pulses a second** and a 50 Hz line gives 100. The board wires them like this:
+
+- The pulses clock timer 1 and timer 3.
+- Timer 3's output clocks timer 2.
+- A counter chip counts timer 1's time-outs, and the PIA's A side reads that count: bit 0 is
+  timer 1's output and bits 1–7 are the count. FLEX's `TIME` reads it beside timer 1's counter.
+- The 6840's interrupt and both of the PIA's go to the bus IRQ.
+
+The pulses are **emulated time**, counted in the CPU's cycles. Flat out (`clock_hz = 0`, the
+default), an emulated second passes as fast as the host allows, so `TIME` reports emulated
+seconds, not the ones on your wall. Set the CPU's `clock_hz` for a timer that keeps real time.
+
+A timer can also count the E clock instead of the line. The 6840's comparison modes measure its
+gate inputs, and the MP-ID ties the gates low, so those modes are not modeled: a timer set to
+one logs a note and counts as continuous. `SHOW` on the board gives each timer's control
+register, latch and counter, the count the PIA reads, and what the printer is connected to.
+
+### The printer port — unit `lpt`
+
+The PIA's B side is a parallel printer port. It is the unit `lpt`: `CONNECT` it to a file or
+another endpoint, and each byte the program writes to the B data register goes out on it. The
+printer's acknowledge comes back at once on CB1, which sets control B's bit 7 (and IRQ, if
+enabled). The data-ready strobe on CB2 is not modeled; the write is the strobe.
 
 ---
 

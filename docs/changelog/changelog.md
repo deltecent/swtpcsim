@@ -46,6 +46,11 @@ interrupting the 6800 at any of its intervals from 1 µs to 1 hour, with its oth
 input port (unit `in`). `examples/mpt/` runs SWTPC's **INTCLK** clock program on it — corrected
 from the published copy, whose interrupt vector was swapped — and ticks once a second.
 
+The SWTPC **MP-ID interface driver** (`mpid`), in the `swtpc09` machine at `E080`: a **6840**
+timer counting the 50/60 Hz power line, and a PIA with a parallel printer port (unit `lpt`).
+It is FLEX9's timer, so FLEX9 no longer says `Timer not available.` at boot, and `TIME`
+reports how long a command took.
+
 ### The monitor prompt and the debugger
 
 Drive a running machine from the `swtpcsim>` prompt: fit and configure boards (`BOARDS`,

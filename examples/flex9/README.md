@@ -1,7 +1,8 @@
 # FLEX9 on the SWTPC 6809
 
 The built-in `swtpc09` machine is an SWTPC 6809: the MP-09 processor board with the S-BUG
-monitor, 56K of RAM, an MP-S console and a DC-4 floppy controller (`dc4`). Each machine file here
+monitor, 56K of RAM, an MP-S console, a DC-4 floppy controller (`dc4`) and the MP-ID interface
+driver (`mpid`), whose 6840 is FLEX9's timer. Each machine file here
 is that machine with a TSC **FLEX9 2.8:3** boot disk mounted on drive 0, so it comes up at
 S-BUG's `>` prompt ready to boot:
 
@@ -15,8 +16,6 @@ S-BUG 1.8 - 56K
 `$C000` and jumps there. FLEX signs on, asks the date, and drops to its `+++` prompt:
 
 ```
-Timer not available.
-
 FLEX - Version 2.8:3 - 56K
 
 Date (MM,DD,YY)? 1,15,80
@@ -24,8 +23,18 @@ Date (MM,DD,YY)? 1,15,80
 +++CAT
 ```
 
-`Timer not available.` is FLEX's own message: the machine has no timer board, and FLEX runs
-without one. From `+++`, `CAT` lists the disk and the usual FLEX commands work.
+From `+++`, `CAT` lists the disk and the usual FLEX commands work. `TIME` runs a command and
+says how long it took, counted on the MP-ID's timer:
+
+```
++++TIME CAT
+  ...
+-- Elapsed time was        2.78
+```
+
+The time is emulated seconds: flat out, the machine runs faster than a real 6809. Set the
+CPU's `clock_hz` in the `.toml` for seconds that match the wall. A machine without the MP-ID
+still runs FLEX, which then says `Timer not available.` at boot.
 
 ## The three disks
 

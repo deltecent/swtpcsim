@@ -106,8 +106,13 @@ be written while it is set.
   at every time-out. Half-period = (N + 1) clocks.
 - **Continuous, dual 8-bit:** Ox is low for M(L + 1) + 1 clocks and high for L clocks. Period
   (L + 1)(M + 1).
-- **Single-shot:** as continuous, but Ox gives **one** pulse per initialization and then stays
-  low. Time-outs still set the flag and recycle. N = 0 (or L = M = 0) disables the output.
+- **Single-shot:** Ox gives **one** pulse per initialization and then stays low. Time-outs
+  still set the flag and recycle. Table 6:
+  - 16-bit: Ox is low for the first clock after initialization, high for the N clocks after
+    that, and goes low at the time-out.
+  - Dual 8-bit: the first period of the continuous dual waveform (low, then high for the last
+    L clocks), then low.
+  - N = 0 (or L = M = 0) gives no pulse at all.
 - **Comparison modes:** Ox is low until the first time-out, then toggles at each time-out; not
   defined for typical use.
 - CRx7 = 0 holds Ox low whatever the mode. Clearing CRx7 while Ox is high takes it low on the

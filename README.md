@@ -112,13 +112,14 @@ description of each (`SHOW BOARD <type>` for one).
 | Board | What it is |
 |---|---|
 | `mpt` | SWTPC MP-T — a 6820 PIA on an SS-30 slot (default `$8010`) whose B side drives an MK5009 time base: an IRQ every 1 µs to 1 hour. Its A side is an input port you `CONNECT`. |
+| `mpid` | SWTPC MP-ID — the 6809 system's interface driver (default `$E080`): a 6840 timer clocked by the 50/60 Hz power line, which FLEX9's `TIME` reads, and a PIA printer port (unit `lpt`). |
 
 **Three ready-built machines** are compiled into the binary; `swtpcsim --list` names them:
 
 | Machine | What it is |
 |---|---|
 | `swtpc` | The SWTPC 6800 — SWTBUG in ROM at `$E000`, an MP-S console at `$8004`, a DC-4 floppy, ready for a FLEX disk. |
-| `swtpc09` | The SWTPC 6809 — the MP-09 processor board with S-BUG in ROM, an MP-S console at `$E004`, a DC-4 floppy. |
+| `swtpc09` | The SWTPC 6809 — the MP-09 processor board with S-BUG in ROM, an MP-S console at `$E004`, a DC-4 floppy, an MP-ID timer at `$E080`. |
 | `altair680` | The MITS Altair 680b — MON680 in ROM, a 6850 console, and the machine that shows what a 6800 in a home was in 1976. |
 
 A built-in is an ordinary machine file that happens to live inside the executable — the same TOML
