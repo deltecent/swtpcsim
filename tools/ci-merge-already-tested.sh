@@ -12,13 +12,19 @@
 # that was about half of all CI runner-minutes (altairsim issue #543).
 #
 # This compares CONTENT, not paths. Nothing is judged safe to skip; the bytes are the same.
+#
+# AND THE PR HEAD MUST HAVE BEEN BUILT. Equal bytes only help if CI compiled them: a branch
+# merged locally and pushed straight to master never had a PR run, so its head was never
+# built. tools/ci-sha-tested.sh asks the Actions API; anything it cannot confirm builds.
 # Every other case builds:
 #   - a pull_request run, or a manual workflow_dispatch -- somebody asked for an answer
 #   - a push whose HEAD is not a merge (a squash, a direct commit, the PDF bot)
 #   - a merge that DID change the tree -- one resolving conflicts, or one landing on a
 #     master that moved underneath the branch. That is the case that needs a run.
+#   - a merge whose second parent has no CI run that built it
 #
-# Needs the history present: check out with fetch-depth: 0 (both callers already do).
+# Needs the history present: check out with fetch-depth: 0 (both callers already do), and
+# GH_TOKEN for the API.
 set -uo pipefail
 
 event="${1:-}"
@@ -28,6 +34,7 @@ no() { echo "ci-merge-already-tested: $* -- building" >&2; echo false; exit 0; }
 [ "$event" = "push" ] || no "event is '${event:-none}', not a push"
 git rev-parse --verify --quiet 'HEAD^2' >/dev/null || no "HEAD is not a merge commit"
 git diff --quiet 'HEAD^2' HEAD || no "the merge changed files relative to the PR head"
+[ "$(bash "$(dirname "$0")/ci-sha-tested.sh" 'HEAD^2')" = "true" ] || no "the PR head was never built by CI"
 
-echo "ci-merge-already-tested: merge introduced no file changes -- the PR run already tested this tree ($(git rev-parse --short 'HEAD^2'))" >&2
+echo "ci-merge-already-tested: merge introduced no file changes -- CI already built and passed this tree ($(git rev-parse --short 'HEAD^2'))" >&2
 echo true
