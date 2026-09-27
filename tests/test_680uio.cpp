@@ -137,6 +137,12 @@ void test_680uio() {
         g.m.bus.memWrite(0xF008, 0x00);   // clear DDR-select
         g.m.bus.memWrite(0xF009, 0xFF);   // program all lines as outputs
         CHECK(g.m.bus.memRead(0xF009) == 0xFF, "with bit 2 = 0 the data address is the DDR");
+
+        // An OUTPUT line reads back what the guest drove onto it -- the 6820 returns the
+        // output register for the bits the DDR makes outputs, not the input latch.
+        g.m.bus.memWrite(0xF008, 0x04);   // back to the data register
+        g.m.bus.memWrite(0xF009, 0x5A);
+        CHECK(g.m.bus.memRead(0xF009) == 0x5A, "an all-output port reads back the byte driven on it");
     }
 
     SECTION("680uio -- the fixed switch inputs at F003");

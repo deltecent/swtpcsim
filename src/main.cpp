@@ -1,6 +1,7 @@
 #include "boards/serial1602.h"   // Serial1602Board: the serial base under the 680 KCACR cassette
 #include "boards/mits-680io.h"
 #include "boards/mits-680uio.h"
+#include "boards/swtpc-mpt.h"
 #include "boards/terminal-font.h"
 #ifdef SWTPCSIM_ENABLE_SDL
 #include "host/display_sdl.h"
@@ -213,6 +214,7 @@ int main(int argc, char** argv) {
     Io680Board::setResolver(resolveEndpoint);    // the 680b's onboard 6850 console
     Uio680Board::setResolver(resolveEndpoint);   // the 680b UI/O's PIA parallel sections
     Serial1602Board::setResolver(resolveEndpoint);  // the serial base under the 680 KCACR cassette
+    MptBoard::setResolver(resolveEndpoint);      // the MP-T side-A input port
 
     // The generic built-in terminal (issue #244) draws into the SAME host video service and
     // paints with the bundled font. A `terminal:` endpoint reads these statics; on a

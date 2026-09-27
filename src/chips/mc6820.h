@@ -23,10 +23,13 @@
 // Register bits acted on (reference/Altair 680b Universal IO Board.md §3 and
 // reference/MITS 88-4PIO.md): Control bit 2 = DDR/Data select; bit 0 = C1
 // interrupt enable; bits 5..0 are stored, bits 7,6 are read-only status. Status
-// bit 7 is the C1/IRQ1 flag (a byte has arrived) -- set by an input strobe
-// (deliver) and cleared by reading the Data Register. DDR bit 1 = output line,
-// 0 = input. Power-on reset clears every register, so all lines are inputs and
-// all flags clear.
+// bit 7 is the C1/IRQ1 flag -- set by an active C1 edge (deliver() for a byte
+// strobed in, strobeC1() for a bare edge) and cleared by reading the Data
+// Register. Control bit 1 picks the active C1 edge (0 = falling, 1 = rising); the
+// chip stores it and the board, which owns the C1 wire, honors it. DDR bit 1 =
+// output line, 0 = input. A Data read returns the output register on the output
+// lines and the input latch on the input lines, as the real part does. Power-on
+// reset clears every register, so all lines are inputs and all flags clear.
 
 #include <cstdint>
 
@@ -56,6 +59,19 @@ public:
     void deliver(int section, uint8_t byte);
     bool inputFull(int section) const;
     bool takeOutput(int section, uint8_t& out);
+
+    // An active edge on C1 with no data behind it -- a timer tick, say (the SWTPC
+    // MP-T wires its time base to CB1). Raises status bit 7 like deliver() and
+    // leaves the input latch alone.
+    void strobeC1(int section);
+
+    // Control bit 1: does C1 respond to the rising edge (true) or the falling one?
+    bool c1RisingEdge(int section) const;
+
+    // What the guest drives onto the port lines: the output register, and the DDR
+    // that says which lines it actually reaches (1 = output).
+    uint8_t outputRegister(int section) const;
+    uint8_t direction(int section) const;
 
     // The section requests an interrupt when a byte is latched AND C1
     // interrupt-enable (Control bit 0) is set (reference §6).

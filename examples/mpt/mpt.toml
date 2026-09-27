@@ -1,0 +1,70 @@
+# SWTPC's interrupt-driven clock on the MP-T timer board:
+#
+#     swtpcsim examples/mpt/mpt.toml
+#     $ G                     (SWTBUG: go -- runs the INTCLK program loaded at 0100)
+#     SWTPC 6800 COMPUTER SYSTEM TIME:
+#     12:59.58                (type the time, HH:MM.SS -- all eight characters)
+#     12:59.59 ... 1:00.00    (it ticks once a second, on the MP-T's interrupt)
+#
+# `startup` loads INTCLK.S19 (beside this file) before SWTBUG starts. The program sets its
+# own interrupt vector at A000 and the MP-T's address at A002, and puts 0100 at A048 -- the
+# PC SWTBUG's `G` returns to -- so `G` is all it takes. SWTBUG's reset does not touch any of
+# the three. See this directory's README.md.
+#
+# This is the shipped machines/swtpc.toml without the floppy controller, plus the MP-T --
+# see that file for why each board and address is what it is.
+
+[machine]
+name    = "mpt"
+startup = ["LOAD INTCLK.S19", "RESET", "RUN"]
+
+# A real 1 MHz 6800, not flat out: the MK5009 counts emulated microseconds, so at full host
+# speed INTCLK's seconds would fly past many to the real one.
+[[board]]
+type     = "6800"
+id       = "cpu0"
+clock_hz = 1000000
+
+[[board]]
+type = "mps"
+id   = "mps0"
+base = 8004
+
+  [board.unit.tty]
+  connect = "console"
+  baud    = 9600
+
+# The MP-T: one 6820 PIA in SS-30 slot 4 (8010-8013), where INTCLK looks for it. Side B
+# drives the MK5009 time base; its interrupt reaches the 6800 IRQ, and SWTBUG's IRQ handler
+# jumps through the word at A000. Side A, the input port `in`, is not used by INTCLK.
+[[board]]
+type = "mpt"
+id   = "mpt0"
+base = 8010
+
+[[board]]
+type = "memory"
+id   = "mem0"
+fill = "random"
+
+  [[board.region]]
+  type = "ram"
+  at   = 0000
+  size = "32K"
+
+  # SWTBUG's scratchpad (A000-A07F) and stack, and INTCLK's two words at A000/A002.
+  [[board.region]]
+  type = "ram"
+  at   = A000
+  size = "8K"
+
+  [[board.region]]
+  type  = "rom"
+  at    = E000
+  mount = "builtin:swtbug"
+
+  [[board.region]]
+  type     = "rom"
+  at       = FC00
+  mount    = "builtin:swtbug"
+  relocate = true

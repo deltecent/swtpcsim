@@ -107,6 +107,12 @@ description of each (`SHOW BOARD <type>` for one).
 |---|---|
 | `680kcacr` | Altair 680b KCACR — a 1602-family UART recording Kansas City Standard FSK, with software motor control and interrupt-driven transfer. `MOUNT` a tape, `WIND`/`REWIND` it. |
 
+**Timers**
+
+| Board | What it is |
+|---|---|
+| `mpt` | SWTPC MP-T — a 6820 PIA on an SS-30 slot (default `$8010`) whose B side drives an MK5009 time base: an IRQ every 1 µs to 1 hour. Its A side is an input port you `CONNECT`. |
+
 **Three ready-built machines** are compiled into the binary; `swtpcsim --list` names them:
 
 | Machine | What it is |

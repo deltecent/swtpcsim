@@ -51,6 +51,12 @@ Grouped by what they do — the same order as the sections below.
 |---|---|
 | `dc4` | SWTPC DC-4 — a WD179x floppy controller. FLEX boots from it |
 
+**Timers**
+
+| Type | What it is |
+|---|---|
+| `mpt` | SWTPC MP-T — a 6820 PIA and an MK5009 time base: an interrupt every 1 µs to 1 hour, and an input port |
+
 ---
 
 ## Memory
@@ -253,6 +259,58 @@ FLEX polls the controller's DRQ rather than timing it, so by default (`speed = f
 collapses seek and per-byte timing and a disk boots near-instantly. Set `speed = real` and it times
 each step and byte the way the hardware did — slower, and able to show a driver the Lost Data error
 it would get if it fell behind.
+
+---
+
+## Timers
+
+## `mpt` — SWTPC MP-T interrupt timer
+
+A **6820 PIA** on an **SS-30 slot**, with a **Mostek MK5009** counter/time base behind its B side.
+A program picks an interval, and the board interrupts the 6800 once every interval. The slot is
+the PIA's four registers in order — data/direction A, control A, data/direction B, control B —
+and defaults to `$8010`–`$8013`, slot 4, where SWTPC's clock program looks for it. Both of the
+PIA's interrupt outputs pull the 6800 IRQ. (The real board could be jumpered to NMI instead;
+this one is IRQ only.)
+
+The B side runs the timer. Write `FF` to the B data-direction register, and set control B for
+an interrupt on CB1's **falling** edge (`3D`). Then write `80` to the B data register to hold
+the count at zero, and the rate code, with bit 7 clear, to start it:
+
+| Code | Interval | Code | Interval | Code | Interval |
+|---|---|---|---|---|---|
+| `0` | 1 µs | `5` | 100 ms | `A` | 1 hour |
+| `1` | 10 µs | `6` | 1 s | `B` | 10 min |
+| `2` | 100 µs | `7` | 10 s | `E` | 20 ms |
+| `3` | 1 ms | `8` | 100 s | `C` `D` `F` | no output |
+| `4` | 10 ms | `9` | 1 min | | |
+
+Every interval after the count starts, CB1 sets control B's bit 7 and, with interrupts enabled,
+pulls IRQ. **Reading the B data register clears it.** The count keeps its phase from the moment
+bit 7 was cleared: a slow interrupt routine does not make the next interval late, and writing
+`80` again stops and zeroes the count, so the board works as a stopwatch too. `SHOW` on the
+board gives the rate and whether the count is running or held.
+
+The intervals are **emulated time**, counted in the CPU's cycles: at 1 MHz, 1 s is a million of
+them. Flat out (`clock_hz = 0`, the default), emulated seconds pass as fast as the host allows,
+so the MP-T's second is over long before a real one. For a clock that keeps time with the wall,
+set the CPU's `clock_hz`.
+
+### The first interrupt can come at once
+
+After a reset, the B data register is `00`. So a program that writes `FF` to the data-direction
+register **before** it writes `80` starts the time base at 1 µs for the few instructions in
+between, and CB1's flag goes up. Enable the interrupt and it fires at once. The real board does
+this too. Read the B data register after starting the timer, before `CLI`, and the first
+interrupt comes one interval later.
+
+### The input port — unit `in`
+
+The A side is a buffered eight-bit input port with a strobe, like half an MP-L. It is the unit
+`in`: `CONNECT` it to an endpoint, and each byte that arrives is latched on the A data lines and
+strobes CA1, setting control A's bit 7 (and IRQ, if enabled). The next byte waits until the
+program reads the A data register. The "data accepted" handshake line back to the sender, CA2,
+is not modeled; the endpoint paces itself.
 
 ---
 

@@ -430,13 +430,14 @@ while IFS='|' read -r dest src; do
   fi
 
   # Did any actual MEDIA come with it? An image, or -- for an example whose product is a
-  # PROGRAM rather than a disk -- the Intel HEX the machine loads. This is a presence check,
+  # PROGRAM rather than a disk -- the Intel HEX or Motorola S-records the machine loads. This is a presence check,
   # not a completeness one: it catches a directory that arrived carrying nothing, and it
   # cannot notice that one image of two went missing. What notices that is the acceptance
   # suite, which boots every shipped example WITH its media (tests/acceptance/examples.cmake,
   # plus trek80.exp and diskbasic.exp) and goes red the moment a file it mounts is absent.
   if [ "$image" = no ] &&
-     ! ls "$pkg/$dest"/*.hex "$pkg/$dest"/*.HEX 2>/dev/null | head -1 | grep -q .; then
+     ! ls "$pkg/$dest"/*.hex "$pkg/$dest"/*.HEX "$pkg/$dest"/*.s19 "$pkg/$dest"/*.S19 \
+          2>/dev/null | head -1 | grep -q .; then
     echo "  !! $dest has a machine file and NO MEDIA" >&2
     missing="$missing $dest"
   fi

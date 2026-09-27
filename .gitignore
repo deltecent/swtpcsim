@@ -98,6 +98,11 @@ examples/**
 !examples/debugger/HELLO.ASM
 !examples/debugger/HELLO.LST
 !examples/debugger/HELLO.S19
+# The MP-T example's program: SWTPC's INTCLK, source and S-records, both corrected from the
+# deramp.com copies (the A000/A002 words swapped back -- examples/mpt/README.md). The
+# S-records are the media: the machine file LOADs them.
+!examples/mpt/INTCLK.ASM
+!examples/mpt/INTCLK.S19
 # The lamp board the Developer Guide's "Writing a board" chapter builds. It is out of the
 # shipping registry on purpose (the reader adds it), so it lives here rather than in src/ --
 # but it is compiled into the test binary and driven by tests/test_lamp.cpp, which is the

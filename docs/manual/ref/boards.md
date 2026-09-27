@@ -55,6 +55,12 @@ and within a group the boards are in **alphabetical order**.
 |---|---|
 | [`680uio`](#680uio) | Altair 680b Universal I/O: 6850 serial port and 6820 PIA |
 
+**Timers**
+
+| Type | What it is |
+|---|---|
+| [`mpt`](#mpt) | SWTPC MP-T: a 6820 PIA interrupt timer on an SS-30 slot |
+
 
 ## CPU
 
@@ -277,4 +283,25 @@ Altair 680b Universal I/O: a second 6850 ACIA serial port ('serial') and a 6820 
 | Key | Kind | Default | Legal | Meaning |
 |---|---|---|---|---|
 | `connect` | string | `null` | text | The endpoint on the other end of this PIA section (CONNECT sets this) |
+
+
+## Timers
+
+### `mpt`
+
+SWTPC MP-T interrupt timer: a 6820 PIA on an SS-30 slot (default $8010-$8013). Side B drives an MK5009 time base -- PB0-PB3 select 1 us to 1 hour, PB7 holds it in reset -- whose output interrupts on CB1; side A is a buffered 8-bit input port with a CA1 strobe. Memory-mapped; both PIA IRQs pull the 6800 IRQ
+
+**Units:** `in` (serial, CONNECT)
+
+#### Board properties
+
+| Key | Kind | Default | Legal | Meaning |
+|---|---|---|---|---|
+| `base` | int | `0x8010` | 8000-801C \| E000-E01C, a multiple of 4 | SS-30 slot base (window + slot*4: $8000 on a 6800 motherboard, $E000 on a 6809 one); PIA side A at base/base+1, side B (the timer) at base+2/base+3 |
+
+#### Unit `in` — `[board.unit.in]`
+
+| Key | Kind | Default | Legal | Meaning |
+|---|---|---|---|---|
+| `connect` | string | `null` | text | The endpoint feeding the side-A input port (CONNECT sets this) |
 

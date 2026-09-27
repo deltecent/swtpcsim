@@ -61,6 +61,7 @@ void test_680io();
 void test_680uio();
 void test_680kcacr();
 void test_swtpc_mps();
+void test_swtpc_mpt();
 void test_swtpc_dc4();
 void test_lamp();
 void test_expr();

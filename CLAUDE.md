@@ -120,7 +120,7 @@ needs no environment at all.
 ./build/swtpc_tests <names>         # local loop: the suites for the subsystem you touched
                                     #   e.g. ./build/swtpc_tests mps dc4 cpu6800
                                     #   ./build/swtpc_tests --list  to see the names
-ctest --test-dir build              # optional full local run  (15 tests, ~15 seconds)
+ctest --test-dir build              # optional full local run  (19 tests, ~15 seconds)
 ```
 
 **Local cadence: run the unit suites for what you changed, then commit — CI runs the full

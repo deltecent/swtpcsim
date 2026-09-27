@@ -232,5 +232,6 @@ address translator's map, and in a 56K system it maps every 4K block to itself.
 
 - **The examples this chapter did not walk through** — `examples/`, and the README in each folder.
 - **The other boards on the 680b** — `examples/altair680/` also has a Universal I/O board example.
+- **An interrupt-driven clock** — `examples/mpt/` runs SWTPC's clock program on the MP-T timer board.
 - **Telnet into the guest, or wire it to a real serial port** — the serial chapter.
 - **Look at the bus while it runs** — the *Debugger* document.

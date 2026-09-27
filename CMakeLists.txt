@@ -440,6 +440,7 @@ add_library(swtpc_core STATIC
   # at a configurable slot base (default $8004/$8005), the board SWTBUG talks to.
   src/boards/swtpc-mps.cpp
   src/boards/swtpc-dc4.cpp
+  src/boards/swtpc-mpt.cpp
   # The two MITS hard-sector floppy controllers, and the register model they share.
   # HardSectorFdc is not a convenience: MITS built the 88-MDS to present the 88-DCDD's
   # programming model, and the period BOOT.ASM declares the ports and every status/command
@@ -670,6 +671,7 @@ add_executable(swtpc_tests
   tests/test_680kcacr.cpp
   tests/test_680uio.cpp
   tests/test_swtpc_mps.cpp
+  tests/test_swtpc_mpt.cpp
   tests/test_swtpc_dc4.cpp
   tests/test_lamp.cpp
   tests/test_boundary.cpp
@@ -968,6 +970,23 @@ if(EXPECT_EXECUTABLE)
                    -f ${CMAKE_CURRENT_SOURCE_DIR}/tests/acceptance/altair680-kcacr.exp
                    $<TARGET_FILE:swtpcsim>)
   set_tests_properties(acceptance-altair680-kcacr PROPERTIES
+                       LABELS acceptance TIMEOUT 120
+                       WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
+  # ---------------------------------------------------------------------------
+  # THE MP-T INTERRUPT TIMER: SWTPC's INTCLK clock program ticking on its interrupt.
+  #
+  # Loads examples/mpt/INTCLK.S19 under SWTBUG, runs it, types a time and watches it roll
+  # over. It exercises the `mpt` board's MK5009 time base, its CB1 interrupt, and the 6800
+  # taking it through SWTBUG's IRQ vector -- if any is wrong, the time never moves. The
+  # machine runs at a real 1 MHz, so the test takes about two seconds. It TYPES, so it is
+  # an expect test.
+  # ---------------------------------------------------------------------------
+  add_test(NAME acceptance-mpt
+           COMMAND ${EXPECT_EXECUTABLE}
+                   -f ${CMAKE_CURRENT_SOURCE_DIR}/tests/acceptance/mpt.exp
+                   $<TARGET_FILE:swtpcsim>)
+  set_tests_properties(acceptance-mpt PROPERTIES
                        LABELS acceptance TIMEOUT 120
                        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 

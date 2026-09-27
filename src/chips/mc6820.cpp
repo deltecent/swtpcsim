@@ -8,6 +8,7 @@ namespace {
 constexpr uint8_t kDdrSelect   = 0x04;  // control bit 2: 0 = DDR, 1 = data reg
 constexpr uint8_t kIrq1Flag    = 0x80;  // status bit 7: C1/IRQ1 -- a byte has arrived
 constexpr uint8_t kC1IntEnable = 0x01;  // control bit 0: C1 interrupt enable
+constexpr uint8_t kC1Rising    = 0x02;  // control bit 1: C1 active edge, 1 = rising
 constexpr uint8_t kCtrlStored  = 0x3F;  // bits 5..0 writable; 7,6 are read-only status
 
 } // namespace
@@ -22,10 +23,11 @@ uint8_t Pia6820::read(int section, int reg) {
     }
     // Data address.
     if (s.ctrl & kDdrSelect) {
-        // Reading the DATA register hands over the input latch and clears the flag
-        // (6820: bit 7 and IRQ clear on a data read).
+        // Reading the DATA register clears the flag (6820: bit 7 and IRQ clear on a
+        // data read). An output line reads back what the guest drove onto it; an
+        // input line hands over the input latch.
         s.inFull = false;
-        return s.inLatch;
+        return (uint8_t)((s.outReg & s.ddr) | (s.inLatch & ~s.ddr));
     }
     return s.ddr;  // the DDR is what the data address reaches when control bit 2 is 0
 }
@@ -65,6 +67,14 @@ bool Pia6820::takeOutput(int section, uint8_t& out) {
     s.outNew = false;
     return true;
 }
+
+void Pia6820::strobeC1(int section) { sec_[section & 1].inFull = true; }
+
+bool Pia6820::c1RisingEdge(int section) const { return (sec_[section & 1].ctrl & kC1Rising) != 0; }
+
+uint8_t Pia6820::outputRegister(int section) const { return sec_[section & 1].outReg; }
+
+uint8_t Pia6820::direction(int section) const { return sec_[section & 1].ddr; }
 
 bool Pia6820::irq(int section) const {
     const Section& s = sec_[section & 1];
