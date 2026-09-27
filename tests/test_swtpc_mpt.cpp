@@ -4,19 +4,24 @@
 #include "boards/swtpc-mpt.h"
 #include "core/machine.h"
 #include "core/statefile.h"
+#include "cpu/cpu.h"
+#include "host/stream.h"
 
 #include <string>
+#include <vector>
 
 using namespace swtpc;
 
 namespace {
 
-// A machine with the MP-T in its default slot ($8010) and a scrap of RAM low down, which
-// does not decode page $80. The clock runs at 1 MHz, so one cycle is one microsecond and the
-// MK5009's periods read straight off as cycle counts.
+// A machine with the MP-T in its default slot ($8010), a scrap of RAM low down and a page
+// at the top for the vectors, neither of which decodes page $80. The side-A unit `in` is
+// wired to a scripted stream through the real connect path. The clock runs at 1 MHz, so one
+// cycle is one microsecond and the MK5009's periods read straight off as cycle counts.
 struct Rig {
-    Machine   m;
-    MptBoard* mpt = nullptr;
+    Machine         m;
+    MptBoard*       mpt = nullptr;
+    ScriptedStream* in  = nullptr;
 
     Rig() {
         std::string err;
@@ -28,8 +33,13 @@ struct Rig {
         ram.at   = 0x0000;
         ram.size = 0x400;
         mem->addRegion(ram, err);
+        ram.at   = 0xFF00;
+        ram.size = 0x100;
+        mem->addRegion(ram, err);
 
         mpt = dynamic_cast<MptBoard*>(m.add("mpt", "mpt0", err));
+        mpt->connect("in", "scripted", err);
+        in = dynamic_cast<ScriptedStream*>(mpt->unitStream("in"));
         m.add("6800", "cpu0", err);
         m.power();
         m.clock.setHz(1000000);
@@ -45,6 +55,24 @@ struct Rig {
     }
 
     bool flag() { return (m.bus.memRead(0x8013) & 0x80) != 0; }
+
+    void load(uint16_t at, const std::vector<uint8_t>& bytes) {
+        for (uint8_t b : bytes) m.bus.memWrite(at++, b);
+    }
+
+    // Run the 6800 until the clock reaches `t`, pumping the boards every 100 cycles the way
+    // the run loop pumps them between slices.
+    void runTo(uint64_t t) {
+        CpuCore* cpu  = m.cpu();
+        uint64_t next = m.clock.now() + 100;
+        while (m.clock.now() < t) {
+            m.clock.advance(cpu->step(m.bus).cycles);
+            if (m.clock.now() >= next) {
+                m.pump();
+                next += 100;
+            }
+        }
+    }
 
     // Run the clock forward to absolute cycle `t` (deadlines fire on the way).
     void to(uint64_t t) {
@@ -237,5 +265,112 @@ void test_swtpc_mpt() {
         CHECK(!h.flag(), "not before the first start's + 1 ms");
         h.to(t0 + 1000);
         CHECK(h.flag(), "and exactly then -- the phase travelled");
+    }
+
+    SECTION("mpt -- DDRB = $FF with ORB still 0 starts the chain at 1 us: the flag goes up");
+    {
+        // After RESET the output register is 0, so the moment DDRB makes the lines outputs
+        // they drive PB7 low (run) and select code 0. Until the program writes $80 the MK5009
+        // counts at 1 us and CB1 sets the flag, enabled or not -- a 6820 flags every active
+        // edge. So a program has to read PRB once before CLI, or its first interrupt is this
+        // one. The CPU test below does.
+        Rig g;
+        g.m.bus.memWrite(0x8012, 0xFF);           // DDRB
+        g.to(g.m.clock.now() + 5);
+        CHECK(g.flag(), "the chain ran at 1 us while PB7 was low");
+        g.m.bus.memWrite(0x8013, 0x3D);
+        CHECK(g.mpt->assertsInt(), "enabling CB1's interrupt with the flag up pulls IRQ at once");
+        g.m.bus.memWrite(0x8012, 0x80);
+        g.m.bus.memRead(0x8012);
+        CHECK(!g.mpt->assertsInt(), "holding the chain and reading PRB is what clears it");
+    }
+
+    SECTION("mpt -- the unit `in`: a byte arrives, latches, and strobes CA1");
+    {
+        Rig             g;
+        std::string     err;
+        UnitDef         u;
+        CHECK(g.mpt->findUnit("IN", u) && u.kind == UnitKind::Serial, "the board has one unit, in");
+        CHECK(u.state == "scripted", "and it names what is connected");
+        CHECK(!g.mpt->connect("out", "scripted", err), "there is no other unit to connect");
+
+        g.m.bus.memWrite(0x8011, 0x05);           // CRA: data register, CA1 IRQ on
+        g.in->feed("AB");
+        g.mpt->pump();
+        CHECK((g.m.bus.memRead(0x8011) & 0x80) != 0, "CRA bit 7 sets when a byte is latched");
+        CHECK(g.mpt->assertsInt(), "and with CRA bit 0 set it pulls IRQ");
+        g.mpt->pump();
+        CHECK(g.m.bus.memRead(0x8010) == 'A', "PRA hands over the first byte -- the second waited");
+        CHECK(!g.mpt->assertsInt(), "reading PRA lets go of IRQ");
+        CHECK((g.m.bus.memRead(0x8011) & 0x80) == 0, "and clears CRA bit 7");
+        g.mpt->pump();
+        CHECK(g.m.bus.memRead(0x8010) == 'B', "the next pump brings the second byte");
+
+        g.m.bus.memWrite(0x8010, 0x55);
+        CHECK(g.in->out().empty(), "a write to side A goes nowhere: the port is an input");
+
+        CHECK(g.mpt->disconnect("in", err), "DISCONNECT in");
+        CHECK(g.mpt->units()[0].state == "null", "leaves nothing on the port");
+    }
+
+    SECTION("mpt -- a snapshot carries a byte waiting in the side-A latch");
+    {
+        Rig g;
+        g.m.bus.memWrite(0x8011, 0x05);
+        g.in->feed("K");
+        g.mpt->pump();
+
+        StateWriter w;
+        g.mpt->serialize(w);
+        Rig         h;
+        StateReader rd(w.data());
+        h.mpt->deserialize(rd);
+        CHECK(h.mpt->assertsInt(), "the restored board still asks for the interrupt");
+        CHECK(h.m.bus.memRead(0x8010) == 'K', "and hands over the latched byte");
+    }
+
+    SECTION("mpt -- a 6800 program: the ISR counts timer ticks and takes the input byte");
+    {
+        Rig g;
+        // The ISR asks each side of the PIA whether it interrupted. Reading the side's data
+        // register is what clears its flag, so both must be read or the IRQ never lets go.
+        g.load(0x0100, {
+            0x8E, 0x00, 0xFF,        // 0100  LDS  #$00FF
+            0x86, 0x05,              // 0103  LDAA #$05     CRA: data register, CA1 IRQ on
+            0xB7, 0x80, 0x11,        // 0105  STAA $8011
+            0x86, 0xFF,              // 0108  LDAA #$FF     DDRB: all outputs
+            0xB7, 0x80, 0x12,        // 010A  STAA $8012
+            0x86, 0x3D,              // 010D  LDAA #$3D     CRB: data, CB1 IRQ on, falling
+            0xB7, 0x80, 0x13,        // 010F  STAA $8013
+            0x86, 0x80,              // 0112  LDAA #$80     hold the chain
+            0xB7, 0x80, 0x12,        // 0114  STAA $8012
+            0x86, 0x03,              // 0117  LDAA #$03     start it: 1 ms
+            0xB7, 0x80, 0x12,        // 0119  STAA $8012
+            0xB6, 0x80, 0x12,        // 011C  LDAA $8012    drop the flag the setup raised
+            0x0E,                    // 011F  CLI
+            0x20, 0xFE,              // 0120  BRA  *
+        });
+        g.load(0x0200, {
+            0xB6, 0x80, 0x11,        // 0200  LDAA $8011    CRA
+            0x2A, 0x06,              // 0203  BPL  $020B    side A did not interrupt
+            0xB6, 0x80, 0x10,        // 0205  LDAA $8010    take the byte (clears CRA bit 7)
+            0xB7, 0x00, 0x11,        // 0208  STAA $0011
+            0xB6, 0x80, 0x13,        // 020B  LDAA $8013    CRB
+            0x2A, 0x06,              // 020E  BPL  $0216    the timer did not interrupt
+            0xB6, 0x80, 0x12,        // 0210  LDAA $8012    clear CRB bit 7
+            0x7C, 0x00, 0x10,        // 0213  INC  $0010    one more tick
+            0x3B,                    // 0216  RTI
+        });
+        g.load(0xFFF8, {0x02, 0x00});
+        g.m.bus.memWrite(0x0010, 0);
+        g.m.bus.memWrite(0x0011, 0);
+        g.m.cpu()->setPc(0x0100);
+
+        g.runTo(5000);
+        g.in->feed("Z");
+        g.runTo(10500);
+        CHECK(g.m.bus.memRead(0x0010) == 10, "ten 1 ms interrupts in 10.5 ms, each one serviced");
+        CHECK(g.m.bus.memRead(0x0011) == 'Z', "and the input byte came in through the same ISR");
+        CHECK(!g.mpt->assertsInt(), "nothing left pending: the ISR cleared both flags");
     }
 }

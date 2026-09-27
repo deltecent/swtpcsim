@@ -201,12 +201,13 @@ const char* boardCategory(const std::string& n) {
     if (n == "680io" || n == "mps") return "Serial";
     if (n == "680kcacr") return "Tape";
     if (n == "680uio") return "Parallel and printer";
+    if (n == "mpt") return "Timers";
     return nullptr;
 }
 
 // The order the board groups print in.
 const std::vector<std::string> kBoardOrder = {
-    "CPU", "Memory", "Disk", "Serial", "Tape", "Parallel and printer",
+    "CPU", "Memory", "Disk", "Serial", "Tape", "Parallel and printer", "Timers",
 };
 
 // A monitor command's functional group. Every built command must name one (see die()).

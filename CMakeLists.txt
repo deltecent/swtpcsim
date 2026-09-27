@@ -974,6 +974,23 @@ if(EXPECT_EXECUTABLE)
                        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
   # ---------------------------------------------------------------------------
+  # THE MP-T INTERRUPT TIMER: SWTPC's INTCLK clock program ticking on its interrupt.
+  #
+  # Loads examples/mpt/INTCLK.S19 under SWTBUG, runs it, types a time and watches it roll
+  # over. It exercises the `mpt` board's MK5009 time base, its CB1 interrupt, and the 6800
+  # taking it through SWTBUG's IRQ vector -- if any is wrong, the time never moves. The
+  # machine runs at a real 1 MHz, so the test takes about two seconds. It TYPES, so it is
+  # an expect test.
+  # ---------------------------------------------------------------------------
+  add_test(NAME acceptance-mpt
+           COMMAND ${EXPECT_EXECUTABLE}
+                   -f ${CMAKE_CURRENT_SOURCE_DIR}/tests/acceptance/mpt.exp
+                   $<TARGET_FILE:swtpcsim>)
+  set_tests_properties(acceptance-mpt PROPERTIES
+                       LABELS acceptance TIMEOUT 120
+                       WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
+  # ---------------------------------------------------------------------------
   # FLEX 2.0 off the DC-4: the SWTPC 6800 disk stack, end to end.
   #
   # The `swtpc` machine's integration oracle. SWTBUG's `D` disk-boot, the DC-4 drive-select

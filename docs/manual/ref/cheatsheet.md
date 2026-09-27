@@ -132,6 +132,12 @@ Type the part before the bracket.
 |---|---|
 | `680uio` | Altair 680b Universal I/O: 6850 serial port and 6820 PIA |
 
+**Timers**
+
+| Type | What it is |
+|---|---|
+| `mpt` | SWTPC MP-T: a 6820 PIA interrupt timer on an SS-30 slot |
+
 ## Machines
 
 | Machine | What it is |

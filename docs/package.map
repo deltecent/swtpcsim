@@ -64,6 +64,7 @@ DIR  examples/altair680  <=  examples/altair680
 DIR  examples/flex       <=  examples/flex
 DIR  examples/flex9      <=  examples/flex9
 DIR  examples/cp68       <=  examples/cp68
+DIR  examples/mpt        <=  examples/mpt
 
 # ---------------------------------------------------------------------------
 # FILES -- <package path>  <=  <path in this repo>

@@ -41,6 +41,11 @@ The SWTPC **MP-09** 6809 processor board (`mp09`), with its DAT address translat
 over an MP-S console at `E004`. The MP-S and DC-4 `base` now also accepts the `E000`–`E01C`
 I/O window that a 6809 system's motherboard uses.
 
+The SWTPC **MP-T interrupt timer** (`mpt`): a 6820 PIA and an MK5009 time base in an SS-30 slot,
+interrupting the 6800 at any of its intervals from 1 µs to 1 hour, with its other side as an
+input port (unit `in`). `examples/mpt/` runs SWTPC's **INTCLK** clock program on it — corrected
+from the published copy, whose interrupt vector was swapped — and ticks once a second.
+
 ### The monitor prompt and the debugger
 
 Drive a running machine from the `swtpcsim>` prompt: fit and configure boards (`BOARDS`,
@@ -71,6 +76,6 @@ build refuses the endpoint cleanly rather than opening a line nobody can see.
 
 Each platform archive holds the program, the **User Manual**, the **monitor** and **debugger**
 references, this changelog, a cheatsheet, both licences, and `examples/` — `flex`, `cp68`,
-`altair680` and a `debugger` walkthrough, media included. SDL3 is linked **statically**, so
+`altair680`, `mpt` and a `debugger` walkthrough, media included. SDL3 is linked **statically**, so
 there is nothing to install beside the binary. Unzip it and run it; nothing needs fetching
 first.

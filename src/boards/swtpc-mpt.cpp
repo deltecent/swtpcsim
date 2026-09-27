@@ -2,12 +2,16 @@
 #include "boards/ss30.h"
 
 #include "core/statefile.h"
+#include "host/endpoint.h"
 
+#include <cctype>
 #include <cstdio>
 #include <utility>
 
 namespace swtpc {
 namespace {
+
+MptBoard::EndpointResolver g_resolver;
 
 constexpr int kA = Pia6820::kSectionA;
 constexpr int kB = Pia6820::kSectionB;
@@ -28,7 +32,17 @@ const char* rateName(unsigned code) {
     return kNames[code & 0x0F];
 }
 
+bool isIn(const std::string& unit) {
+    std::string lo;
+    for (char c : unit) lo += (char)std::tolower((unsigned char)c);
+    return lo == "in";
+}
+
 } // namespace
+
+void MptBoard::setResolver(EndpointResolver r) { g_resolver = std::move(r); }
+
+MptBoard::MptBoard() : in_(std::make_unique<NullStream>()) {}
 
 // The MK5009's taps, off a 1 MHz crystal: 10^0 through 10^8 plus 2x10^4, 6x10^7, 6x10^8 and
 // 36x10^8 (the data sheet's OUTPUT GATING). The select code is not in tap order -- A is the
@@ -74,9 +88,11 @@ void MptBoard::write(const BusCycle& c) {
     unsigned off = (unsigned)(c.addr - at_) & 3;
     int      sec = (int)(off >> 1);
     pia_.write(sec, (off & 1) ? 0 : 1, c.data);
+    // Neither side's output goes anywhere as a byte: side A's lines are driven by the
+    // input buffers, and side B's go to the MK5009, read level by level through bLines().
+    uint8_t discard;
+    pia_.takeOutput(sec, discard);
     if (sec == kB) {
-        uint8_t discard;
-        pia_.takeOutput(kB, discard);  // side B's output goes to the MK5009, read by bLines()
         linesChanged();
         rearm();
     }
@@ -145,9 +161,20 @@ void MptBoard::edge() {
 // ---------------------------------------------------------------------------
 void MptBoard::reset(Reset) {
     pia_.reset();
+    in_->flush();
     held_ = true;
     rearm();
     intChanged();
+}
+
+// The door to the outside (DESIGN.md 7.1): one byte into the side-A latch when it is
+// empty. Delivering it is the CA1 strobe, which may raise IRQA.
+void MptBoard::pump() {
+    in_->pump();
+    if (!pia_.inputFull(kA) && in_->readable()) {
+        pia_.deliver(kA, in_->readByte());
+        intChanged();
+    }
 }
 
 void MptBoard::configChanged() {
@@ -186,6 +213,21 @@ std::vector<Property> MptBoard::properties() {
     return p;
 }
 
+std::vector<Property> MptBoard::unitProperties(const std::string& unit) {
+    if (!isIn(unit)) return {};
+    std::vector<Property> p;
+    Property              x;
+    x.name = "connect";
+    x.help = "The endpoint feeding the side-A input port (CONNECT sets this)";
+    x.kind = Kind::Str;
+    x.get  = [this] { return Value::ofStr(inSpec_); };
+    x.set  = [this](const Value& v, std::string& err) { return connect("in", v.s(), err); };
+    p.push_back(std::move(x));
+    return p;
+}
+
+std::vector<UnitDef> MptBoard::units() const { return {{"in", UnitKind::Serial, inSpec_}}; }
+
 std::vector<MapEntry> MptBoard::memMap() const {
     return {
         {(uint32_t)at_, (uint32_t)(at_ + 1), "read/write",
@@ -212,8 +254,64 @@ std::vector<std::string> MptBoard::statusLines() const {
 }
 
 // ---------------------------------------------------------------------------
+// The unit `in`. An in:/out: PATH is rebased against the machine file's directory; the
+// spec as given is kept, so CONFIG SAVE + reload does not rebase it twice.
+// ---------------------------------------------------------------------------
+bool MptBoard::connect(const std::string& unit, const std::string& endpoint, std::string& err) {
+    if (!isIn(unit)) {
+        err = "mpt has one unit, 'in' (the side-A input port)";
+        return false;
+    }
+    if (!g_resolver) {
+        err = "no endpoint resolver installed";
+        return false;
+    }
+    std::vector<std::string> paths;
+    std::string              spec = rebaseEndpointPaths(endpoint, [&](const std::string& p) {
+        paths.push_back(p);
+        return resolvePath(p);
+    });
+    auto s = g_resolver(spec, err);
+    if (!s) {
+        for (const std::string& p : paths) err += pathNote(p);
+        return false;
+    }
+    in_     = std::move(s);
+    inSpec_ = endpoint;
+    return true;
+}
+
+bool MptBoard::disconnect(const std::string& unit, std::string& err) {
+    if (!isIn(unit)) {
+        err = "mpt has one unit, 'in' (the side-A input port)";
+        return false;
+    }
+    in_     = std::make_unique<NullStream>();
+    inSpec_ = "null";
+    return true;
+}
+
+// A pre-built stream (the MCP console's scripted line); the spec is its own describe().
+bool MptBoard::connectStream(const std::string& unit, std::unique_ptr<ByteStream> s,
+                             std::string& err) {
+    if (!isIn(unit)) {
+        err = "mpt has one unit, 'in' (the side-A input port)";
+        return false;
+    }
+    if (!s) s = std::make_unique<NullStream>();
+    inSpec_ = s->describe();
+    in_     = std::move(s);
+    return true;
+}
+
+ByteStream* MptBoard::unitStream(const std::string& unit) {
+    return isIn(unit) ? in_.get() : nullptr;
+}
+
+// ---------------------------------------------------------------------------
 // SNAPSHOT / RESTORE. The base is config but two bytes; the PIA carries the lines the
-// guest drove, t0_ and held_ the chain. The pending edge is not written -- it is derived,
+// guest drove and the side-A latch, t0_ and held_ the chain. The `in` endpoint is config,
+// re-applied from the machine file, as on the other boards' lines. The pending edge is not written -- it is derived,
 // and re-armed from the restored state into the restored clock.
 // ---------------------------------------------------------------------------
 void MptBoard::serialize(StateWriter& w) const {

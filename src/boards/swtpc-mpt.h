@@ -26,7 +26,10 @@
 //      5    100 ms
 //
 // Side A is the board's other job: a buffered eight-bit input port with a CA1 strobe,
-// the same as half an MP-L. Both PIA IRQ outputs are jumpered to the bus IRQ -- the
+// the same as half an MP-L. It is the unit `in`: CONNECT it to an endpoint and each byte
+// that arrives is latched and strobes CA1, one at a time -- the next waits until the
+// guest reads PRA. The CA2 "data accepted" handshake back to the sender is not modeled;
+// the stream paces itself. Both PIA IRQ outputs are jumpered to the bus IRQ -- the
 // board's NMI option needs a bus NMI, which this simulator does not carry.
 //
 // THE TIME BASE IS ONE DEADLINE, NOT A TICK (DESIGN.md 7.5). Every tap of the MK5009
@@ -42,8 +45,11 @@
 #include "chips/mc6820.h"
 #include "core/board.h"
 #include "core/clock.h"
+#include "host/stream.h"
 
 #include <cstdint>
+#include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -51,7 +57,7 @@ namespace swtpc {
 
 class MptBoard : public Board {
 public:
-    MptBoard() = default;
+    MptBoard();
     ~MptBoard() override;
 
     std::string type() const override { return "mpt"; }
@@ -71,13 +77,23 @@ public:
     // ---- lifecycle ----
     void reset(Reset) override;
     void power() override { reset(Reset::PowerOn); }
+    void pump() override;
     void clockAttached() override { rearm(); }
     void configChanged() override;
 
     // ---- reflection ----
     std::vector<Property>    properties() override;
+    std::vector<Property>    unitProperties(const std::string& unit) override;
+    std::vector<UnitDef>     units() const override;
     std::vector<MapEntry>    memMap() const override;
     std::vector<std::string> statusLines() const override;
+
+    // ---- the side-A input port, unit `in` ----
+    bool connect(const std::string& unit, const std::string& endpoint, std::string& err) override;
+    bool disconnect(const std::string& unit, std::string& err) override;
+    bool connectStream(const std::string& unit, std::unique_ptr<ByteStream> s,
+                       std::string& err) override;
+    ByteStream* unitStream(const std::string& unit) override;
 
     // ---- SNAPSHOT / RESTORE (DESIGN.md 13) ----
     void serialize(StateWriter& w) const override;
@@ -86,12 +102,22 @@ public:
     // The MK5009 period for a rate code, in microseconds; 0 for a code with no output.
     static uint64_t periodUs(unsigned code);
 
+    // The endpoint resolver for `in`, installed by the composition root (DESIGN.md 7.7).
+    using EndpointResolver =
+        std::function<std::unique_ptr<ByteStream>(const std::string&, std::string&)>;
+    static void setResolver(EndpointResolver r);
+
 private:
     // The SS-30 slot base. Slot 4 ($8010) is where SWTPC's INTCLK looks for the board,
     // and the one slot the stock `swtpc` machine leaves free.
     uint16_t at_ = 0x8010;
 
     Pia6820 pia_;
+
+    // What is on the other end of side A. Never null -- a NullStream when idle. The spec
+    // is the endpoint as the user gave it, for SHOW and CONFIG SAVE.
+    std::unique_ptr<ByteStream> in_;
+    std::string                 inSpec_ = "null";
 
     // The MK5009's state: the cycle its chain last left reset, and whether RESET 0 is
     // high now. A PB line the guest is not driving (DDR bit 0) floats high, so after

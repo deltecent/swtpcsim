@@ -1,0 +1,89 @@
+#!/usr/bin/expect -f
+#
+# THE MP-T INTERRUPT TIMER, RUNNING SWTPC'S CLOCK -- `examples/mpt/mpt.toml`.
+#
+# The machine file LOADs INTCLK.S19 and starts SWTBUG. `G` runs INTCLK, which asks for the
+# time, programs the MP-T for a 1 s interrupt, and from then on counts seconds in its
+# interrupt routine -- reached through the 6800's IRQ, SWTBUG's IRQ vector and the word
+# INTCLK left at A000. So the time moving on the console proves the whole path: the `mpt`
+# board's MK5009 deadline, its CB1 flag and IRQ, the CPU taking the interrupt, and the ISR
+# reading PRB to clear it.
+#
+# What we type is 12:59.58, so the display must roll through 12:59.59 to " 1:00.00" (INTCLK
+# prints the hour's leading zero as a space). The first tick comes at once: INTCLK starts the
+# MK5009 while ORB is still 0, which runs it at 1 us until the program holds it, and never
+# reads PRB before CLI (examples/mpt/INTCLK.ASM). The second comes one second later -- at the
+# machine's 1 MHz, a real second.
+#
+# TRAPS:
+#   1. `expect` PATTERNS ARE GLOBS. Every literal here is `-ex`.
+#   2. EVERY `expect` HAS A TIMEOUT ARM, or the test hangs instead of failing.
+#   3. DO NOT TYPE UNTIL INTCLK IS READING. SWTBUG's output routine reads the ACIA's data
+#      register before every character it prints (SAVGET: LDAB 1,X, to tell an ACIA from a
+#      PIA), so anything typed while INTCLK is still printing its prompt is swallowed. The
+#      prompt is `HH:MM.SS ` followed by a CR; once the CR is out, INTCLK is in INEEE.
+#
+# usage: expect -f mpt.exp <swtpcsim>   (run from the repo root)
+
+set timeout 30
+log_user 0
+
+set sim [lindex $argv 0]
+
+# The startup LOAD's path resolves against the machine file, so this works from anywhere.
+spawn $sim examples/mpt/mpt.toml
+
+expect {
+    -ex "\[console" {}
+    timeout { puts "### FAIL: the machine never started"; exit 1 }
+}
+
+expect {
+    -ex "\$" {}
+    timeout { puts "### FAIL: SWTBUG never printed its '\$' prompt"; exit 1 }
+}
+
+# G resumes at the PC in SWTBUG's saved frame -- 0100, which INTCLK.S19 put at A048.
+send "G"
+expect {
+    -ex "TIME:" {}
+    timeout { puts "### FAIL: G did not start INTCLK (no TIME: sign-on)"; exit 1 }
+}
+
+# Trap 3: wait for the prompt's trailing CR.
+expect {
+    -ex "HH:MM.SS \r" {}
+    timeout { puts "### FAIL: INTCLK never asked for the time"; exit 1 }
+}
+
+send "12:59.58"
+expect {
+    -ex "12:59.59" {}
+    timeout {
+        puts "### FAIL: the clock never ticked to 12:59.59."
+        puts "###   The MP-T's interrupt did not reach INTCLK's service routine."
+        exit 1
+    }
+}
+
+expect {
+    -ex " 1:00.00" { puts "### mpt: INTCLK ticked 12:59.59 -> 1:00.00 on the MP-T interrupt" }
+    timeout {
+        puts "### FAIL: the clock stopped after its first tick."
+        puts "###   The MP-T interrupted once and never again."
+        exit 1
+    }
+}
+
+send "\005"
+expect {
+    -ex "swtpcsim> " {}
+    timeout { puts "### FAIL: ATTN did not return to the monitor"; exit 1 }
+}
+send "QUIT\r"
+expect {
+    eof {}
+    timeout { puts "### FAIL: would not quit"; exit 1 }
+}
+
+puts "### ALL STEPS PASSED"
