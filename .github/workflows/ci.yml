@@ -20,9 +20,10 @@ on:
 
 # A MERGE THAT CHANGED NO FILES DOES NOT BUILD AGAIN. Merging an up-to-date PR makes a commit
 # whose tree is byte-identical to the PR head CI just passed; `scope` sees that
-# (tools/ci-merge-already-tested.sh) and `build` is skipped. The run is still green, and says
-# why in the scope log. A merge that did change the tree -- conflicts resolved, or master moved
-# underneath the branch -- builds as before. (altairsim issue #543.)
+# (tools/ci-merge-already-tested.sh), confirms CI built that head (tools/ci-sha-tested.sh), and
+# `build` is skipped. The run is still green, and says why in the scope log. A merge that did
+# change the tree -- conflicts resolved, or master moved underneath the branch -- builds as
+# before, and so does one whose head CI never built. (altairsim issue #543.)
 #
 # A NEWER PUSH TO A PR CANCELS THE OLDER RUN, which nobody will read. Pushes to master are
 # grouped by commit instead, so no master run ever cancels or queues behind another.
@@ -48,6 +49,8 @@ jobs:
 
       - id: pick
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}   # tools/ci-sha-tested.sh asks the Actions API
         run: |
           set -euo pipefail
 
@@ -80,11 +83,13 @@ jobs:
           # Did code change? HEAD is the merge commit (PR) or the pushed tip. The path rule
           # itself lives in tools/ci-changed-code.sh, so it can be run against any commit locally.
           #
-          # A PUSHED MERGE ASKS ABOUT BOTH PARENTS, and builds everything only if BOTH answer
-          # code. Each parent is a tree CI already tested: HEAD^1 is master's previous tip, HEAD^2
-          # the PR head. If either side added only documentation on top of its tested tree, the
-          # merge is that tree plus docs, and one leg is enough. Either parent alone gets one case
-          # wrong:
+          # A PUSHED MERGE ASKS ABOUT BOTH PARENTS, and builds everything unless a parent CI
+          # already built answers documentation-only. HEAD^1 is master's previous tip, HEAD^2
+          # the PR head. If either side added only documentation on top of a tree CI built and
+          # passed, the merge is that tree plus docs, and one leg is enough. A parent CI never
+          # built (a branch merged locally and pushed straight to master; a skipped run) is no
+          # base at all -- tools/ci-sha-tested.sh checks, and with no built parent the whole
+          # matrix runs. Either parent alone gets one case wrong:
           #   - HEAD^2 alone: a docs PR cut from an OLD master drags in everything master gained
           #     since, all of it already tested there, and builds three platforms (altairsim #531's merge).
           #   - HEAD^1 alone: a code PR merged after the PDF bot committed to master counts the
@@ -94,14 +99,20 @@ jobs:
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             code=$(bash tools/ci-changed-code.sh '${{ github.event.pull_request.base.sha }}')
           elif [ "${{ github.event_name }}" = "push" ] && git rev-parse --verify --quiet 'HEAD^2' >/dev/null; then
-            code=$(bash tools/ci-changed-code.sh 'HEAD^1')
-            if [ "$code" = "true" ]; then
-              code=$(bash tools/ci-changed-code.sh 'HEAD^2')
-            fi
+            code=true
+            for parent in 'HEAD^1' 'HEAD^2'; do
+              if [ "$(bash tools/ci-sha-tested.sh "$parent")" = "true" ] &&
+                 [ "$(bash tools/ci-changed-code.sh "$parent")" = "false" ]; then
+                code=false
+                break
+              fi
+            done
           else
             base='${{ github.event.before }}'
             # First push of a branch has no usable base -- take no chances, build everything.
-            if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+            # Nor does a force push, whose old tip may not even be in this clone.
+            if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ] ||
+               ! git merge-base --is-ancestor "$base" HEAD 2>/dev/null; then
               echo "no base to diff against -- full matrix"
               code=true
             else
