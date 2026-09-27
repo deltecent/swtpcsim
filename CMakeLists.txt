@@ -707,9 +707,6 @@ add_executable(swtpc_tests
   tests/test_units.cpp
   tests/test_wd17xx.cpp)
 target_link_libraries(swtpc_tests PRIVATE swtpc_core)
-if(MSVC)
-  target_link_options(swtpc_tests PRIVATE /STACK:16777216)  # DEBUG
-endif()
 # A couple of sections mount a real committed disk image (the SDOS video boot in
 # test_vdb8024.cpp); `ctest` runs `unit` from the build tree, so give it the source root
 # to resolve those paths.
