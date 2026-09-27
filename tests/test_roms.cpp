@@ -47,6 +47,10 @@ void test_roms() {
         // in-ROM at E3F8-E3FF and the board mirror-decodes the part across the top 8 K
         // so FFF8-FFFF reads them. An S19, decoded through loadSrec.
         {"swtbug", 0xE000, 0xE3FF, 1024, 0xF9130EF4u, true},
+        // The SWTPC 6809 S-BUG monitor v1.8: the 2K part in the MP-09's IC4 at
+        // F800-FFFF, decoded on the physical address. Its vectors are in-ROM at
+        // FFF2-FFFF (RESET -> FF00, START). An S19, decoded through loadSrec.
+        {"sbug", 0xF800, 0xFFFF, 2048, 0x10A045A7u, true},
     };
     for (const auto& c : cases) {
         std::string tag = std::string("builtin:") + c.name;

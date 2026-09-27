@@ -1,4 +1,5 @@
 #include "boards/swtpc-dc4.h"
+#include "boards/ss30.h"
 
 #include "core/bus.h"
 #include "core/clock.h"
@@ -227,23 +228,24 @@ std::vector<Property> Dc4Board::properties() {
     {
         Property x;
         x.name  = "base";
-        x.help  = "WD179x block base ($8018 = SS-30 slot 6); registers at base..base+3, "
-                  "drive-select latch four below (base-4 = $8014)";
+        x.help  = "WD179x block base ($8018 = SS-30 slot 6; $E018 on a 6809 motherboard); "
+                  "registers at base..base+3, drive-select latch four below (base-4)";
         x.kind  = Kind::Int;
         x.radix = 16;
         x.min   = 0x8008;  // latch would be $8004 (the console slot) -- keep clear below that
-        x.max   = 0x801C;
+        x.max   = 0xE01C;
+        x.values = "8008-801C | E008-E01C, a multiple of 4";
         x.get   = [this] { return Value::ofInt(base_); };
         x.set   = [this](const Value& v, std::string& err) {
             long long b = v.i();
-            if ((b & 0xFFE0) != 0x8000 || (b & 0x0003) != 0) {
-                err = "the DC-4's WD179x block is an SS-30 slot: $8000 + slot*4, a multiple "
-                      "of 4 in the $8000-$801C I/O window";
+            if (!ss30Slot(b)) {
+                err = "the DC-4's WD179x block is an SS-30 slot: a multiple of 4 in the "
+                      "$8000-$801C or the $E000-$E01C I/O window";
                 return false;
             }
-            if (b < 0x8008) {
+            if ((b & 0x1F) < 0x08) {
                 err = "base too low: the drive-select latch (base-4) must clear the console "
-                      "slot at $8004";
+                      "slot at window+4";
                 return false;
             }
             base_ = (uint16_t)b;

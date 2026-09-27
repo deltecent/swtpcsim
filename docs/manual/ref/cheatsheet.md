@@ -99,6 +99,7 @@ Type the part before the bracket.
 |---|---|
 | `6800` | Altair 680b / SWTPC CPU board: a Motorola 6800 |
 | `6809` | CPU board: a Motorola 6809 |
+| `mp09` | SWTPC MP-09: a 6809 with the DAT and the S-BUG ROM |
 
 **Memory**
 

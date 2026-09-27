@@ -3,6 +3,7 @@
 #include "boards/s100-memory.h"
 #include "boards/mits-680cpu.h"
 #include "boards/cpu6809card.h"
+#include "boards/swtpc-mp09.h"
 #include "boards/mits-680io.h"
 #include "boards/mits-680kcacr.h"
 #include "boards/mits-680uio.h"
@@ -24,6 +25,7 @@ std::vector<BoardType> boardTypes() {
         {"memory", "RAM/ROM board: plain, unbanked memory regions", "RAM/ROM board: a list of regions -- plain, unbanked memory"},
         {"6800", "Altair 680b / SWTPC CPU board: a Motorola 6800", "Altair 680b / SWTPC CPU board: a Motorola 6800. Decodes nothing -- it drives the bus. Memory-mapped I/O"},
         {"6809", "CPU board: a Motorola 6809", "CPU board: a Motorola MC6809. It decodes nothing. It drives the bus and takes IRQ from the bus. Its FIRQ input is not connected"},
+        {"mp09", "SWTPC MP-09: a 6809 with the DAT and the S-BUG ROM", "SWTPC MP-09 processor board: a Motorola MC6809, the DAT (a write-only 16 x 4 map at FFF0-FFFF that turns each logical 4K segment into a physical one; FF00-FFFF passes through) and IC4, the S-BUG monitor ROM at physical F800-FFFF. Takes IRQ from the bus; FIRQ is not connected"},
         {"680io", "Altair 680b onboard I/O: 6850 console and strap port", "Altair 680b onboard I/O: a 6850 ACIA console ('tty') at F000/F001 and the config-strap read port at F002. Memory-mapped"},
         {"680uio", "Altair 680b Universal I/O: 6850 serial port and 6820 PIA", "Altair 680b Universal I/O: a second 6850 ACIA serial port ('serial') and a 6820 PIA parallel port (sections 'p1a/p1b', 'p2a/p2b' with pias=2) in an S9-relocatable window (default base F000: serial F006/F007, PIA F008-F00F), plus fixed switch inputs at F003 and a non-latched output at F010-F013. Memory-mapped, active-high"},
         {"680kcacr", "Altair 680b KCACR: Kansas City audio cassette", "Altair 680b KCACR audio-cassette interface: a 1602-family UART recording Kansas City Standard FSK, memory-mapped at F010 (status/control) and F011 (data), active-LOW. Adds software motor control (control D7=on, D6=off) and interrupt-driven transfer (D0/D1 enables pull the 6800 IRQ). MOUNT a tape, WIND/REWIND it"},
@@ -36,6 +38,7 @@ std::unique_ptr<Board> makeBoard(const std::string& type) {
     if (type == "memory") return std::make_unique<MemoryBoard>();
     if (type == "6800") return std::make_unique<Cpu6800Board>();
     if (type == "6809") return std::make_unique<Cpu6809Board>();
+    if (type == "mp09") return std::make_unique<Mp09Board>();
     if (type == "680io") return std::make_unique<Io680Board>();
     if (type == "680uio") return std::make_unique<Uio680Board>();
     if (type == "680kcacr") return std::make_unique<KcacrBoard>();

@@ -200,6 +200,11 @@ public:
     // Null on a backplane with no processor, exactly like cpu().
     CpuCard* cpuCard();
 
+    // Where a CPU address lands on the backplane (CpuCard::toBus) -- the identity on
+    // every card but the MP-09, whose DAT translates it. What a view keyed to the PC
+    // reads the bus at. The identity when there is no processor.
+    uint16_t toBus(uint16_t logical);
+
     // The instruction set the machine currently speaks -- the active core's own
     // answer. Empty when there is no CPU, which is why DISASM in a CPU-less
     // machine asks you to say CPU=8080 rather than guessing (DESIGN.md 3.0.2).

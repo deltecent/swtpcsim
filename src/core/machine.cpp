@@ -381,6 +381,11 @@ CpuCard* Machine::cpuCard() {
     return nullptr;
 }
 
+uint16_t Machine::toBus(uint16_t logical) {
+    CpuCard* c = cpuCard();
+    return c ? c->toBus(logical) : logical;
+}
+
 std::string Machine::isa() {
     CpuCore* c = cpu();
     return c ? c->isa() : "";

@@ -189,6 +189,18 @@ public:
     // simply never reports, and SHOW reads 0 -- "it has not run", which is the truth.
     virtual void      reportAchievedHz(long long) {}
     virtual long long achievedHz() const { return 0; }
+
+    // ---- WHERE A CPU ADDRESS LANDS ON THE BUS ----
+    //
+    // On every card but one the answer is "the same address": the core's address
+    // lines ARE the backplane's. The SWTPC MP-09 puts a DAT between them, so a logical
+    // address the core runs at may be a different physical address on the bus.
+    //
+    // DUMP, DEPOSIT and DISASM <addr> are about the BUS and take physical addresses
+    // (DESIGN.md 10.2). A view keyed to the PC -- the instruction at the PC, HISTORY's
+    // opcode bytes -- starts from a CPU address, and asks this first. It is a lookup,
+    // not a cycle: no side effect, pure like Board::peek().
+    virtual uint16_t toBus(uint16_t logical) const { return logical; }
 };
 
 } // namespace swtpc

@@ -130,6 +130,14 @@ void test_swtpc_mps() {
         CHECK(!setProperty(*g.mps, "base", "8005", err), "$8005 is not a slot boundary -- rejected");
         CHECK(!setProperty(*g.mps, "base", "8020", err), "$8020 is outside the SS-30 I/O window -- rejected");
         CHECK(base(*g.mps) == 0x8008, "and a rejected set leaves the base where it was");
+
+        // A 6809 motherboard (the MP-B3, or an MP-B modified per the MP-09 manual) puts
+        // the same window at $E000. S-BUG's console is slot 1 there: $E004.
+        CHECK(setProperty(*g.mps, "base", "E004", err), "$E004 is slot 1 of the 6809 window");
+        c.addr = 0xE004;
+        CHECK(g.mps->decodes(c), "and E004 is now ours");
+        CHECK(!setProperty(*g.mps, "base", "A004", err), "$A004 is in neither window -- rejected");
+        CHECK(!setProperty(*g.mps, "base", "E020", err), "$E020 is past the 6809 window -- rejected");
     }
 
     SECTION("mps -- idle, the ACIA is not asking for an interrupt");

@@ -202,6 +202,10 @@ void test_swtpc_dc4() {
         CHECK(!setProperty(*g.dc4, "base", "8019", err),
               "a base that is not a multiple of 4 is not an SS-30 slot");
         CHECK(setProperty(*g.dc4, "base", "8010", err), "$8010 (slot 4) is a legal base");
+        CHECK(setProperty(*g.dc4, "base", "E018", err),
+              "$E018 is slot 6 of the 6809 window -- S-BUG's Comreg, latch at $E014");
+        CHECK(!setProperty(*g.dc4, "base", "E004", err),
+              "in the 6809 window too, the latch may not land on the console slot");
 
         CHECK(propInt(*g.dc4, "drives") == 4, "four drives by default");
         CHECK(!setProperty(*g.dc4, "drives", "0", err), "zero drives is rejected");

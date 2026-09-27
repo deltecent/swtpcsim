@@ -33,6 +33,11 @@ A Motorola **6809** CPU board (`6809`) as well. No built-in machine uses it yet,
 file can: `DISASM` and `EDIT` speak 6809, with every indexed mode, and `SHOW BUS IRQ` shows its
 seven vectors.
 
+The SWTPC **MP-09** 6809 processor board (`mp09`), with its DAT address translator and the
+**S-BUG 1.8** monitor (`builtin:sbug`) in its ROM socket. S-BUG signs on (`S-BUG 1.8 - 56K`)
+over an MP-S console at `E004`. The MP-S and DC-4 `base` now also accepts the `E000`–`E01C`
+I/O window that a 6809 system's motherboard uses.
+
 ### The monitor prompt and the debugger
 
 Drive a running machine from the `swtpcsim>` prompt: fit and configure boards (`BOARDS`,

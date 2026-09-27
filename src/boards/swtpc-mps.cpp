@@ -1,4 +1,5 @@
 #include "boards/swtpc-mps.h"
+#include "boards/ss30.h"
 
 #include "core/statefile.h"
 #include "host/endpoint.h"
@@ -88,17 +89,19 @@ std::vector<Property> MpsBoard::properties() {
     {
         Property x;
         x.name  = "base";
-        x.help  = "SS-30 slot base ($8000 + slot*4); control/status at base, Rx/Tx at base+1";
+        x.help  = "SS-30 slot base (window + slot*4: $8000 on a 6800 motherboard, $E000 on "
+                  "a 6809 one); control/status at base, Rx/Tx at base+1";
         x.kind  = Kind::Int;
         x.radix = 16;
         x.min   = 0x8000;
-        x.max   = 0x801C;
+        x.max   = 0xE01C;
+        x.values = "8000-801C | E000-E01C, a multiple of 4";
         x.get   = [this] { return Value::ofInt(at_); };
         x.set   = [this](const Value& v, std::string& err) {
             long long b = v.i();
-            if ((b & 0xFFE0) != 0x8000 || (b & 0x0003) != 0) {
-                err = "the MP-S base is an SS-30 slot: $8000 + slot*4, a multiple of 4 in "
-                      "the $8000-$801C I/O window";
+            if (!ss30Slot(b)) {
+                err = "the MP-S base is an SS-30 slot: a multiple of 4 in the $8000-$801C "
+                      "or the $E000-$E01C I/O window";
                 return false;
             }
             at_ = (uint16_t)b;

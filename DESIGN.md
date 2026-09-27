@@ -204,12 +204,24 @@ any other.
 assembler, both pages of prefixed opcodes and every indexed post-byte),
 `src/cpu/cpu6809.cpp`, and `src/boards/cpu6809card.cpp` — a plain `6809` board: the
 6800 card with the core swapped, and nothing else. It is deliberately **not** the
-MP-09: that card's DAT and S-BUG socket are modeled from its own manual when the
-`swtpc09` machine is built (issue #3). Its FIRQ input is **unconnected**, because the
+MP-09, which is its own board (below). Its FIRQ input is **unconnected**, because the
 SS-50 bus manual in `reference/` names only IRQ and NMI, and a board that invented a
 wire for FIRQ would give the bus a line it may never have had (§0.1). The ISA registry
 moved out of `isa6800.cpp` into `src/isa/isa.cpp`, since it no longer belongs to one
 instruction set.
+
+**The SWTPC MP-09 (`mp09`, `src/boards/swtpc-mp09.cpp`) is the first card whose CPU address
+is not the bus address.** Its DAT — a 16 × 4 RAM, write-only at `FFF0`–`FFFF` — replaces
+the 6809's A12–A15 with a physical segment, so the byte the core asks for at `C000` may
+live at `3000`. The core is not told. The card gives it a **private inner `Bus`** with one
+board on it, the DAT port, which forwards every cycle to the backplane at the translated
+address; the core, the backplane and its no-invention rule (§4) are all unchanged, and
+BREAK MEM, TRACE and HISTORY see real **physical** cycles. The card is also a plain board on
+the backplane: IC4, the S-BUG ROM, is decoded on the physical address (`F800`–`FFFF`).
+Logical `FF00`–`FFFF` passes the DAT untranslated — an **inference** from S-BUG, whose reset
+code lives there and loads the DAT (`reference/MP-09 6809 CPU Board.md` says why, and that
+it is the first suspect if a boot misbehaves around `Fxxx`). The debugger's views keyed to
+the PC ask the card where a CPU address lands (`CpuCard::toBus`, §10.2).
 
 **The split still pays off, even though no 6800 card here masters the bus.** Making the CPU a `BusMaster` rather than a bus special case is what lets the monitor *find* and *step* the processor generically (`Machine::master()`/`masters()`, a `dynamic_cast<BusMaster*>`), and it is the door a future cycle-stealing card walks through unchanged: a DMA card is simply a `Board` that *becomes* a `BusMaster` when granted the bus, never a bolted-on path in the bus. The framework's S-100 machines used exactly that door for `pHOLD`/`pHLDA` DMA; none of the 6800 machines here do, so the transient-master half was removed — see §4.5 for the heritage note.
 
@@ -1388,6 +1400,8 @@ Implemented once against `Board::properties()`; they know nothing about baud rat
 - **`peek`: through the decode, but *without a cycle*.** Same decode, same bank, same board — but no strobe, no side effect. **`DISASM`, `WHO` and the debugger's display use this, and they must.** *(Corrected 2026-07-11: §10.2 originally put `DISASM` in the first group. That was wrong, and quietly so — a disassembler built on real reads works perfectly against RAM and then, the first time someone disassembles a page with a 6850 mapped into it, **eats the console's input**. The bug would only appear when the memory map was unlucky.)* A board that cannot answer without side effects returns false, and the byte reads `FF` — which is honest, because on real hardware the data bus is only defined *during* a cycle.
 - **`ROM`: behind the bus**, into whichever chip answers reads at that address. A **write-side** qualifier on `LOAD`, `DEPOSIT`, `FILL` and `MOVE`, and nothing else. Addresses are bus addresses like everywhere else.
 
+- **The PC is a CPU address, and the CPU may not see the bus's address space.** On the MP-09 the DAT sits between them (§3). So a view that *starts from the PC* — the instruction on the register line, `NEXT`'s look at the opcode, HISTORY's bytes, where a bare `DISASM` continues — asks the CPU card first where that address lands on the bus (`CpuCard::toBus`, the identity on every other card) and reads there. Everything the operator types is still a bus address; only the PC is translated, because only the PC was never one.
+
 **EVERY ADDRESS IN THIS MONITOR IS A BUS ADDRESS, 0x0000–0xFFFF.** There is exactly one address space the operator can type, and it is the one the CPU sees. *(Patrick, 2026-07-17: board-local offsets are out as too confusing — every address refers to the 64K address space.)*
 
 **`ROM` is the PROM burner, and that is not a metaphor.** A ROM region does not decode a write cycle (§4.2), so `DEPOSIT FF00 41` cannot possibly reach it — nor should it, because on real hardware a bus write can't program a PROM either. You pull the chip and put it in a programmer, which is *not a bus operation*. `LOAD dbl.hex ROM` is exactly that, and it is why **the operator can write ROM while the guest cannot**, with no `writable` flag to leak and no originator tag on the bus.
@@ -1663,7 +1677,7 @@ The rest of `porting-notes.md` is CP/M-guest and hard-sector-disk specific — B
 
 Per §0.1, when a future SWTPC/SS-30 board is wanted — an MP-L/MP-LA parallel port, an AC-30 cassette, or a CT-64/CT-1024 terminal — it is blocked on its *manual*, not on code. **Ask Patrick and he will source it** — do not reconstruct, guess, or read another simulator.
 
-**The MP-09 6809 CPU board is no longer blocked**: its assembly instructions, schematic and S-BUG source are located on deramp.com, and the 6809 processor itself is modeled from the Motorola programming manual already in `reference/`. They go through the normal `reference/` distillation when the `swtpc09` machine is built (issue #3).
+**The MP-09 6809 CPU board is modeled** (`mp09`) from its assembly instructions, schematic and the S-BUG source, distilled in `reference/MP-09 6809 CPU Board.md` and `reference/S-BUG Monitor.md`; the 6809 processor itself is modeled from the Motorola programming manual. One fact is still inferred rather than read: the DAT bypass for `FFxx` (§3).
 
 > **🔴 THE FRAMEWORK ONCE NAMED SIMH's `mits_dsk.c` AS AUTHORITATIVE FOR A DISK CONTROLLER, AND IT WAS FLATLY WRONG.**
 > `mits_dsk.c` is **SIMH**, and §0.1 — the first rule in this document — says we do not learn hardware

@@ -428,6 +428,7 @@ add_library(swtpc_core STATIC
   # carrying a Cpu6800. Memory-mapped I/O, so it still decodes nothing.
   src/boards/mits-680cpu.cpp
   src/boards/cpu6809card.cpp
+  src/boards/swtpc-mp09.cpp
   src/boards/mits-680io.cpp
   # The 680b Universal I/O expansion board -- a second 6850 serial + a 6820 PIA
   # (chips/mc6820.h), memory-mapped and S9-relocatable.
@@ -694,6 +695,7 @@ add_executable(swtpc_tests
   tests/test_media.cpp
   tests/test_memory.cpp
   tests/test_mirror.cpp
+  tests/test_mp09.cpp
   tests/test_modemline.cpp
   tests/test_numbers.cpp
   tests/test_paths.cpp
