@@ -74,6 +74,7 @@ const struct {
     {"680kcacr", test_680kcacr},
     {"swtpc_mps", test_swtpc_mps},
     {"swtpc_mpt", test_swtpc_mpt},
+    {"mc6840", test_mc6840},
     {"swtpc_dc4", test_swtpc_dc4},
     {"lamp", test_lamp},
     {"expr", test_expr},
