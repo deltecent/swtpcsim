@@ -138,6 +138,7 @@ Type the part before the bracket.
 |---|---|
 | `altair680` | The Altair 680b -- MITS's second machine, and a different animal from the 8800. |
 | `swtpc` | The SWTPC 6800 -- Southwest Technical Products' 1975 computer, the machine this simulator is named for. |
+| `swtpc09` | The SWTPC 6809 -- an SS-50 system with the MP-09 processor board and S-BUG in its ROM. |
 
 ## A machine file, in one look
 

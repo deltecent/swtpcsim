@@ -1,7 +1,7 @@
 # SWTPC MP-09 processor board (`mp09`)
 
-**Status:** done for the standard board (DAT and IC4). The `swtpc09` machine and its FLEX9 boot
-are issue #3.
+**Status:** done for the standard board (DAT and IC4). It is the CPU of the built-in `swtpc09`
+machine, which comes up to S-BUG's prompt. Its FLEX9 boot is issue #3.
 
 ## The real hardware
 

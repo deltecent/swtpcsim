@@ -17,6 +17,8 @@ optional and detected, never required.
 
 - **`swtpcsim swtpc`** brings up an SWTPC 6800 under **SWTBUG**, its ROM monitor, with an
   MP-S serial console and a DC-4 floppy controller. **FLEX 2.0** boots from drive 0.
+- **`swtpcsim swtpc09`** brings up an SWTPC 6809: the **MP-09** processor board under
+  **S-BUG 1.8**, with 56K of RAM, an MP-S console at `E004` and a DC-4 floppy controller.
 - **`swtpcsim altair680`** brings up a MITS **Altair 680b** under **MON680**, the 680b's own
   ROM monitor, on a single 6850 ACIA — and the **KCACR** Kansas City audio-cassette interface
   loads and saves off tape.

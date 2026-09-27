@@ -1,0 +1,65 @@
+# The SWTPC 6809 -- an SS-50 system with the MP-09 processor board and S-BUG in its ROM.
+#
+#     swtpcsim swtpc09
+#
+#     S-BUG 1.8 - 56K
+#     >
+#
+# That is the S-BUG monitor's sign-on and prompt. S-BUG is the MP-09's own monitor: on
+# reset it loads the DAT, sizes the RAM 4K at a time, maps what it finds from the bottom
+# up, and prints the total. Its commands are one letter each:
+#
+#     M addr    examine/change memory       G         go (resume)
+#     R         display registers           L         load S-records
+#     U         boot a mini-floppy          D         boot an 8-inch (DMAF2) floppy
+#
+# WHAT MAKES IT A 6809 SYSTEM. The MP-09 replaces the 6800 board in a standard SWTPC
+# system, and the motherboard moves the SS-30 I/O window from 8000 to E000 (the MP-B3,
+# or an MP-B with the change the MP-09 manual gives). The I/O boards are the same ones
+# the 6800 uses; only their addresses move. S-BUG is hardwired to them:
+# roms/SBUG/SBUG.ASM, ACIAS = $E004, Drvreg = $E014, Comreg = $E018.
+
+[machine]
+name = "swtpc09"
+
+# S-BUG runs from the reset vector. POWER ON arms the FFFE/FFFF fetch, which reaches IC4
+# through the DAT's FFxx bypass whatever the DAT holds (-> FF00, S-BUG's START).
+startup = ["RESET", "RUN"]
+
+# The MP-09: the 6809, the DAT, and S-BUG in IC4 at physical F800-FFFF.
+[[board]]
+type     = "mp09"
+id       = "cpu0"
+clock_hz = 0                  # flat out (the default); 1000000 for the 4 MHz crystal
+rom      = "builtin:sbug"
+
+# The MP-S serial console on SS-30 slot 1 of the E000 window: the 6850 at E004/E005.
+[[board]]
+type = "mps"
+id   = "mps0"
+base = E004
+
+  [board.unit.tty]
+  connect = "console"
+  baud    = 9600
+
+# The DC-4 floppy controller on SS-30 slots 5+6: the drive-select latch at E014 and the
+# WD179x at E018-E01B. S-BUG's `U` restores drive 0, reads track 0 sector 1 into $C000
+# and jumps there (SBUG.ASM: MINBOOT). No disk is mounted by default.
+[[board]]
+type   = "dc4"
+id     = "dc40"
+base   = E018                 # WD179x block; the drive-select latch sits at E014
+drives = 4
+
+# 56K of RAM at physical 0000-DFFF: the manual's standard system. S-BUG keeps its
+# variables and stack at the top of it (SBUG.ASM: ORG $DFC0).
+[[board]]
+type = "memory"
+id   = "mem0"
+fill = "random"               # real static RAM does not come up zeroed
+
+  [[board.region]]
+  type = "ram"
+  at   = 0000
+  size = "56K"

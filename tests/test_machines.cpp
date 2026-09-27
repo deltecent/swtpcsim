@@ -1,8 +1,11 @@
 #include "test.h"
 
 #include "boards/registry.h"
+#include "boards/swtpc-mps.h"
 #include "config/toml.h"
+#include "core/machine.h"
 #include "core/machines.h"
+#include "host/stream.h"
 
 #include <string>
 #include <vector>
@@ -27,7 +30,7 @@ void test_machines() {
     SECTION("built-in machines -- compiled in, not looked up");
 
     auto all = builtinMachines();
-    CHECK(all.size() >= 2, "at least the two machines (altair680, swtpc) are compiled in");
+    CHECK(all.size() >= 3, "the three machines (altair680, swtpc, swtpc09) are compiled in");
 
     // EVERY BUILT-IN MUST ACTUALLY LOAD, and this loop is not ceremony -- it is here
     // because it WASN'T, and a machine shipped broken for exactly as long as it took
@@ -196,6 +199,53 @@ void test_machines() {
     md.bus.memWrite(0xFF00, 0x00);
     CHECK(md.bus.lastUnclaimed(), "nobody decodes a write to the PROM");
     CHECK(md.bus.memRead(0xFF00) == 0x8D, "so the PROM is untouched");
+
+    SECTION("swtpc09 -- the MP-09, S-BUG in IC4, and the I/O window at E000");
+
+    // The addresses are S-BUG's, not choices: roms/SBUG/SBUG.ASM hardwires ACIAS = E004,
+    // Drvreg = E014 and Comreg = E018, and keeps its stack at DFC0 in the top of RAM.
+    const BuiltinMachine* s9 = findMachine("swtpc09");
+    CHECK(s9 != nullptr, "the SWTPC 6809 is a built-in machine");
+    if (!s9) return;
+
+    Machine m9;
+    CHECK(loadMachine(*s9, m9, err), "swtpc09 loads");
+    CHECK(m9.boards().size() == 4,
+          "an MP-09, an mps serial console, a dc4 floppy controller, and a memory card");
+    CHECK(m9.cpu() != nullptr && m9.isa() == "6809", "it speaks 6809");
+
+    m9.bus.memWrite(0xDFFF, 0x21);
+    CHECK(m9.bus.memRead(0xDFFF) == 0x21, "DFFF is the top of the 56K of RAM");
+    (void)m9.bus.memRead(0xE004);
+    CHECK(!m9.bus.lastUnclaimed(), "E004 is the MP-S ACIA -- a board answers");
+    (void)m9.bus.memRead(0xE018);
+    CHECK(!m9.bus.lastUnclaimed(), "E018 is the DC-4 WD179x command/status");
+    (void)m9.bus.memRead(0xE014);
+    CHECK(!m9.bus.lastUnclaimed(), "E014 is the DC-4 drive-select latch");
+    // Moving the I/O window to E000 is what frees 8000-DFFF for RAM.
+    m9.bus.memWrite(0x8004, 0x5A);
+    CHECK(m9.bus.memRead(0x8004) == 0x5A, "8004, the 6800's console slot, is plain RAM here");
+    CHECK(m9.bus.memRead(0xFFFE) == 0xFF && m9.bus.memRead(0xFFFF) == 0x00,
+          "the reset vector is FF00, S-BUG's START, from IC4 on the MP-09");
+
+    // And it RUNS: the machine as shipped, with the console swapped for a script, comes
+    // up from its reset vector to S-BUG's sign-on. The RAM sizing only reads 56K if the
+    // memory, the DAT and the console are all where S-BUG looks for them.
+    {
+        auto* mps = dynamic_cast<MpsBoard*>(m9.find("mps0"));
+        CHECK(mps != nullptr, "the console is an MP-S");
+        if (!mps) return;
+        CHECK(mps->connect("tty", "scripted", err), "its tty takes a script");
+        auto* tty = dynamic_cast<ScriptedStream*>(mps->unitStream("tty"));
+        m9.power();
+        bool up = false;
+        for (int i = 0; i < 200 && !up; ++i) {
+            m9.debug.run(10000);
+            m9.pump();
+            up = tty->out().find("S-BUG 1.8 - 56K") != std::string::npos;
+        }
+        CHECK(up, ("swtpc09 comes up to S-BUG's sign-on: " + tty->out()).c_str());
+    }
 
     SECTION("a file or a built-in? decided by SPELLING, never by the filesystem");
 

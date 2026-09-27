@@ -1673,7 +1673,7 @@ The rest of `porting-notes.md` is CP/M-guest and hard-sector-disk specific — B
 
 ## 17. Blocked on documentation
 
-**Nothing that ships is blocked on documentation.** Every board in the two built-in machines — the `6800` CPU, the MP-S serial console (`mps`), the DC-4 floppy (`dc4`), and the Altair 680b's on-board 6850 console and Kansas City Standard cassette — is modeled from a **period manual** in `reference/`, listed in `docs/sources.md`.
+**Nothing that ships is blocked on documentation.** Every board in the built-in machines — the `6800` and `mp09` CPU boards, the MP-S serial console (`mps`), the DC-4 floppy (`dc4`), and the Altair 680b's on-board 6850 console and Kansas City Standard cassette — is modeled from a **period manual** in `reference/`, listed in `docs/sources.md`.
 
 Per §0.1, when a future SWTPC/SS-30 board is wanted — an MP-L/MP-LA parallel port, an AC-30 cassette, or a CT-64/CT-1024 terminal — it is blocked on its *manual*, not on code. **Ask Patrick and he will source it** — do not reconstruct, guess, or read another simulator.
 

@@ -29,6 +29,7 @@ Grouped by what they do — the same order as the sections below.
 |---|---|
 | `6800` | a Motorola 6800 — the CPU of the SWTPC 6800 and the MITS Altair 680b |
 | `6809` | a Motorola 6809 — a processor board for a machine that you build |
+| `mp09` | SWTPC MP-09 — a 6809 with its DAT address translator and the S-BUG monitor. The CPU of the SWTPC 6809 |
 
 **Serial ports and consoles**
 
@@ -104,8 +105,8 @@ actually reached).
 ## `6809` — a Motorola 6809
 
 The `6809` board is a Motorola MC6809 processor and its crystal. It has the same three
-properties as the `6800` board. No built-in machine uses it yet. Add it to a machine file, or
-type `BOARDS ADD 6809 cpu0`.
+properties as the `6800` board. No built-in machine uses it; the SWTPC 6809 uses `mp09`, below.
+Add it to a machine file, or type `BOARDS ADD 6809 cpu0`.
 
 The 6809 has seven vectors at the top of memory: SWI3 at `FFF2`, SWI2 at `FFF4`, FIRQ at
 `FFF6`, IRQ at `FFF8`, SWI at `FFFA`, NMI at `FFFC` and RESET at `FFFE`. `SHOW BUS IRQ` shows
@@ -114,6 +115,25 @@ all seven. The board takes IRQ from the bus. Its FIRQ input is not connected.
 `DISASM` and `EDIT` use the 6809 instruction set when this board is the processor. On a 6809,
 `<nn` is a direct address and `>nnnn` is an extended address. `REGS` shows `A`, `B`, `X`, `Y`,
 `U`, `S`, `DP`, `PC` and the flags `E F H I N Z V C`. `D` is reachable by name.
+
+## `mp09` — SWTPC MP-09 processor board
+
+The MP-09 is SWTPC's 6809 board, the processor of the built-in **`swtpc09`** machine. It is a
+6809 like the `6809` board, and it carries two more things:
+
+- **The S-BUG monitor**, in a 2K ROM socket at `F800`–`FFFF`. The `rom` property names what is
+  in the socket: `builtin:sbug` by default, or a file of your own that fits in `F800`–`FFFF`.
+  An empty `rom` leaves the socket empty.
+- **The DAT**, an address translator. It maps each 4K block the 6809 addresses to a 4K block
+  on the bus. The software loads it by writing to `FFF0`–`FFFF`; S-BUG does this at reset, and
+  in a 56K system it maps every block to itself. Addresses `FF00`–`FFFF` are never
+  translated. `SHOW cpu0` shows the map as the read-only `dat` property: sixteen digits, the
+  bus block for each 6809 block `0` to `F`.
+
+A 6809 system has its I/O at `E000`, not `8000`, so the MP-S console is at `E004` and the DC-4
+at `E014`/`E018`. The addresses you type at the `swtpcsim>` prompt (`DUMP`, `DEPOSIT`,
+`DISASM` with an address) are bus addresses. The views of the instruction at the PC translate
+it through the DAT for you.
 
 ### The crystal is on the board — `clock_hz`
 
