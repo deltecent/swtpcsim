@@ -22,6 +22,7 @@ and within a group the boards are in **alphabetical order**.
 |---|---|
 | [`6800`](#6800) | Altair 680b / SWTPC CPU board: a Motorola 6800 |
 | [`6809`](#6809) | CPU board: a Motorola 6809 |
+| [`mp09`](#mp09) | SWTPC MP-09: a 6809 with the DAT and the S-BUG ROM |
 
 **Memory**
 
@@ -87,6 +88,23 @@ CPU board: a Motorola MC6809. It decodes nothing. It drives the bus and takes IR
 | `achieved_hz` | int | — | — | LIVE: cycles per real second the run loop last reached -- the crystal you got, beside the one you asked for. Read-only; 0 until it has run. **(read-only — not a key you may set)** |
 
 
+### `mp09`
+
+SWTPC MP-09 processor board: a Motorola MC6809, the DAT (a write-only 16 x 4 map at FFF0-FFFF that turns each logical 4K segment into a physical one; FF00-FFFF passes through) and IC4, the S-BUG monitor ROM at physical F800-FFFF. Takes IRQ from the bus; FIRQ is not connected
+
+**Units:** `6809` (cpu)
+
+#### Board properties
+
+| Key | Kind | Default | Legal | Meaning |
+|---|---|---|---|---|
+| `clock_hz` | int | `0` | `0` .. `100000000` | The CPU clock: a quarter of the crystal -- 1000000 for the 4 MHz crystal, 2000000 for 8 MHz. 0 runs flat out -- as fast as the host can. |
+| `idle` | bool | `true` | `on` \| `off` | Stand down when the guest is only polling an empty keyboard. On by default -- the guest cannot tell, and a prompt stops burning a core. |
+| `rom` | string | `builtin:sbug` | text | The monitor in IC4, at physical F800-FFFF: builtin:<name> or a file (relative to THIS FILE). Empty leaves the socket empty. |
+| `dat` | string | — | — | LIVE: the physical 4K segment each logical segment 0-F maps to, as the DAT holds it. Read-only -- the guest loads it by writing FFF0-FFFF. **(read-only — not a key you may set)** |
+| `achieved_hz` | int | — | — | LIVE: cycles per real second the run loop last reached -- the clock you got, beside the one you asked for. Read-only; 0 until it has run. **(read-only — not a key you may set)** |
+
+
 ## Memory
 
 ### `memory`
@@ -133,7 +151,7 @@ SWTPC DC-4 floppy disk controller: a WD179x (1 MHz) with up to four 5.25" drives
 
 | Key | Kind | Default | Legal | Meaning |
 |---|---|---|---|---|
-| `base` | int | `0x8018` | `0x8008` .. `0x801C` | WD179x block base ($8018 = SS-30 slot 6); registers at base..base+3, drive-select latch four below (base-4 = $8014) |
+| `base` | int | `0x8018` | 8008-801C \| E008-E01C, a multiple of 4 | WD179x block base ($8018 = SS-30 slot 6; $E018 on a 6809 motherboard); registers at base..base+3, drive-select latch four below (base-4) |
 | `speed` | enum | `full` | `full` \| `real` | Drive timing. full: collapse seek and byte timing so the disk keeps up with the simulator at whatever speed it runs (the default -- FLEX polls DRQ/BUSY and cannot tell the difference). real: model the WD179x's actual timing -- 30ms/step seeks and per-byte data rate, and the Lost Data that a too-slow driver would hit |
 | `drives` | int | `4` | `1` .. `4` | Drives on the controller (binary select D0..D1, 0-3) |
 
@@ -173,7 +191,7 @@ SWTPC MP-S serial interface: a 6850 ACIA console ('tty') on an SS-30 slot, contr
 
 | Key | Kind | Default | Legal | Meaning |
 |---|---|---|---|---|
-| `base` | int | `0x8004` | `0x8000` .. `0x801C` | SS-30 slot base ($8000 + slot*4); control/status at base, Rx/Tx at base+1 |
+| `base` | int | `0x8004` | 8000-801C \| E000-E01C, a multiple of 4 | SS-30 slot base (window + slot*4: $8000 on a 6800 motherboard, $E000 on a 6809 one); control/status at base, Rx/Tx at base+1 |
 
 #### Unit `tty` — `[board.unit.tty]`
 

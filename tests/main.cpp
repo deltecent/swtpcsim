@@ -66,6 +66,7 @@ const struct {
     {"isa6809", test_isa6809},
     {"asm6809", test_asm6809},
     {"cpu6809", test_cpu6809},
+    {"mp09", test_mp09},
     {"680board", test_680board},
     {"680io", test_680io},
     {"680uio", test_680uio},

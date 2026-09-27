@@ -195,7 +195,7 @@ void schemaTable(std::ostream& o, std::vector<Property>& props) {
 
 // A board's functional group. Every board type must name one (see die()).
 const char* boardCategory(const std::string& n) {
-    if (n == "6800" || n == "6809") return "CPU";
+    if (n == "6800" || n == "6809" || n == "mp09") return "CPU";
     if (n == "memory") return "Memory";
     if (n == "dc4") return "Disk";
     if (n == "680io" || n == "mps") return "Serial";

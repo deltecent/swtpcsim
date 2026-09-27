@@ -63,6 +63,7 @@ the binary, and naming one boots it:
 $ swtpcsim --list                what the built-in names are
 $ swtpcsim altair680             a MITS Altair 680b, MON680 in ROM, on a terminal
 $ swtpcsim swtpc                 a SWTPC 6800, SWTBUG in ROM, ready for a FLEX disk
+$ swtpcsim swtpc09               a SWTPC 6809, S-BUG in ROM, with a DC-4 floppy
 ```
 
 A built-in is an ordinary machine file that happens to live inside the executable — the same

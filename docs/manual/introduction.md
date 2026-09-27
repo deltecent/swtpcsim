@@ -20,6 +20,8 @@ thing again and get the same answer, because nothing here is intermittent and no
 - **A Motorola 6800**, faithful down to the flags and the cycle counts, and checked against a
   processor reference before any board is built on it. It drives two machines: the SWTPC 6800 on
   its SS-50/SS-30 bus, and the MITS Altair 680b.
+- **A Motorola 6809**, checked the same way. It drives the SWTPC 6809: the MP-09 processor board
+  and its S-BUG monitor, in the same SS-50 system.
 - **A board for most of the machine**, each modelled from its own manual: the CPU board, RAM/ROM,
   the SWTPC MP-S serial console, the Altair 680b's onboard and Universal I/O, the KCACR
   audio-cassette interface, and the DC-4 floppy controller that FLEX boots from. The boards

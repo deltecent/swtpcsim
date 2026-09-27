@@ -107,11 +107,12 @@ description of each (`SHOW BOARD <type>` for one).
 |---|---|
 | `680kcacr` | Altair 680b KCACR — a 1602-family UART recording Kansas City Standard FSK, with software motor control and interrupt-driven transfer. `MOUNT` a tape, `WIND`/`REWIND` it. |
 
-**Two ready-built machines** are compiled into the binary; `swtpcsim --list` names them:
+**Three ready-built machines** are compiled into the binary; `swtpcsim --list` names them:
 
 | Machine | What it is |
 |---|---|
 | `swtpc` | The SWTPC 6800 — SWTBUG in ROM at `$E000`, an MP-S console at `$8004`, a DC-4 floppy, ready for a FLEX disk. |
+| `swtpc09` | The SWTPC 6809 — the MP-09 processor board with S-BUG in ROM, an MP-S console at `$E004`, a DC-4 floppy. |
 | `altair680` | The MITS Altair 680b — MON680 in ROM, a 6850 console, and the machine that shows what a 6800 in a home was in 1976. |
 
 A built-in is an ordinary machine file that happens to live inside the executable — the same TOML

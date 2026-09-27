@@ -2515,7 +2515,7 @@ void Monitor::showRegs(std::ostream& out) {
 
     std::string insn;
     if (const Disassembler* d = disassemblerFor(c->isa()))
-        insn = annotateOperands(insnAt(c->pc(), *d));
+        insn = annotateOperands(insnAt(m_.toBus(c->pc()), *d));
 
     auto regs = c->registers();
     out << regLine(regs, [&regs](size_t i) { return regs[i].get(); }, insn) << "\n";
@@ -4267,7 +4267,7 @@ bool Monitor::exec(const std::string& line, std::ostream& out) {
         // instruction at the new PC, exactly what the following STEP will execute.
         // Bare EXAMINE (EXAMINE NEXT) is a byte-at-a-time memory walk and stays quiet.
         if (addressed) {
-            disasmNext_ = A;  // a following bare DISASM continues from here, as after STEP/RUN
+            disasmNext_ = m_.toBus((uint16_t)A);  // a following bare DISASM continues from here, as after STEP/RUN
             showRegs(out);
         }
         flush(out);
@@ -4881,7 +4881,7 @@ bool Monitor::exec(const std::string& line, std::ostream& out) {
         // pump reflects the resting state, not per-instruction -- the lamps show the
         // last bus cycle, as they did on real hardware.
         m_.pump();
-        disasmNext_ = cpu->pc();
+        disasmNext_ = m_.toBus(cpu->pc());
         if (!echo) {
             char b[96];
             std::snprintf(b, sizeof b, "%llu instructions, %llu cycles.",
@@ -4903,11 +4903,11 @@ bool Monitor::exec(const std::string& line, std::ostream& out) {
         CpuCore* cpu = needCpu(out);
         if (!cpu) return true;
 
-        uint8_t op = m_.bus.peek(cpu->pc());
+        uint8_t op = m_.bus.peek(m_.toBus(cpu->pc()));
         SigintGuard guard;
         if (isCall(op) || isRst(op)) {
             uint8_t len = 1;
-            if (const Disassembler* d = disassemblerFor(cpu->isa())) len = insnAt(cpu->pc(), *d).len;
+            if (const Disassembler* d = disassemblerFor(cpu->isa())) len = insnAt(m_.toBus(cpu->pc()), *d).len;
             m_.debug.setStepTarget((cpu->pc() + len) & 0xFFFF);
             runMachine(out, /*stepOver=*/true);
             m_.debug.setStepTarget(-1);  // ALWAYS clear -- a real bp/HLT/ATTN may have stopped us first
@@ -4919,7 +4919,7 @@ bool Monitor::exec(const std::string& line, std::ostream& out) {
         // Push the resting bus cycle to the panel (see EXAMINE). The JSR/BSR branch
         // already pumped inside runMachine; this extra pump is diff-gated -- harmless.
         m_.pump();
-        disasmNext_ = cpu->pc();
+        disasmNext_ = m_.toBus(cpu->pc());
         showRegs(out);
         return true;
     }
@@ -4991,7 +4991,7 @@ bool Monitor::exec(const std::string& line, std::ostream& out) {
             std::snprintf(b, sizeof b, "%04X", (unsigned)cpu->pc());
             out << "PC set to " << b
                 << "; not entering the run loop under MCP -- advance with the run tool.\n";
-            disasmNext_ = cpu->pc();
+            disasmNext_ = m_.toBus(cpu->pc());
             showRegs(out);
             return true;
         }
@@ -4999,7 +4999,7 @@ bool Monitor::exec(const std::string& line, std::ostream& out) {
         runMachine(out);
 
         flush(out);
-        disasmNext_ = cpu->pc();
+        disasmNext_ = m_.toBus(cpu->pc());
         showRegs(out);
         return true;
     }

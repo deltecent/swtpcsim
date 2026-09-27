@@ -55,6 +55,7 @@ void test_cpu6800();
 void test_isa6809();
 void test_asm6809();
 void test_cpu6809();
+void test_mp09();
 void test_680board();
 void test_680io();
 void test_680uio();

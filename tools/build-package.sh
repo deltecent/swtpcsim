@@ -15,6 +15,7 @@
 #   LICENSE-SDL3             SDL3's, because SDL3 is linked STATICALLY INTO the program
 #   examples/altair680/      \
 #   examples/flex/            \  the examples, each a self-contained folder: a machine file
+#   examples/flex9/           |
 #   examples/cp68/           /  and the media it mounts, lying beside it
 #
 # ONE ARCHIVE, FOR ONE PLATFORM, BUILT ON THAT PLATFORM. --target names it and picks the
