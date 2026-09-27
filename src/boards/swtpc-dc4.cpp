@@ -95,8 +95,8 @@ bool Dc4Board::currentTrackHasSector0() {
     if (!d || !d->img) return false;
     const int n = d->drv.sectorCount();
     for (int i = 0; i < n; ++i) {
-        FloppyDrive::SectorId id{};
-        if (d->drv.sectorIdAt(i, id) && id.sector == 0) return true;
+        FloppyDrive::SectorId sid{};
+        if (d->drv.sectorIdAt(i, sid) && sid.sector == 0) return true;
     }
     return false;
 }
