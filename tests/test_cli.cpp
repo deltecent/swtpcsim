@@ -467,33 +467,32 @@ void test_cli() {
 
     // An explicit-address command has no cursor to move, so `.` reproduces it
     // byte-for-byte. That IS the test that `.` re-ran the exact line.
-    std::fprintf(stderr, "@@ 1\n"); std::fflush(stderr); std::string d0 = run("D 0");
-    std::fprintf(stderr, "@@ 2\n"); std::fflush(stderr); CHECK(run(".") == d0, ". repeats the last command exactly");
+    std::string d0 = run("D 0");
+    CHECK(run(".") == d0, ". repeats the last command exactly");
 
     // `.` is never recorded as the last command, so a second `.` still repeats the
     // ORIGINAL line -- if it recorded itself, exec would recurse on `.` forever.
-    std::fprintf(stderr, "@@ 3\n"); std::fflush(stderr); std::string r1 = run(".");
+    std::string r1 = run(".");
     std::string r2 = run(".");
     CHECK(r1 == d0 && r2 == d0, ". repeats the original, not the previous . (and cannot loop)");
 
     // The point of it: a bare DISASM continues from its own cursor, so `.` walks
     // forward. Two `.` after a bare DI land on different addresses each time.
-    std::fprintf(stderr, "@@ 4\n"); std::fflush(stderr); run("DI 0");                 // seat the disasm cursor
-    std::fprintf(stderr, "@@ 5\n"); std::fflush(stderr); std::string di1 = run("DI"); // bare DI continues; this line becomes the one `.` repeats
-    std::fprintf(stderr, "@@ 6\n"); std::fflush(stderr); std::string di2 = run(".");  // repeats "DI" -- continues further, so it differs
+    run("DI 0");                 // seat the disasm cursor
+    std::string di1 = run("DI"); // bare DI continues; this line becomes the one `.` repeats
+    std::string di2 = run(".");  // repeats "DI" -- continues further, so it differs
     CHECK(di1 != di2, ". re-runs a continuing verb, walking DISASM forward");
 
     // A `.` before anything has been typed has nothing to repeat, and says so
     // rather than doing something -- the way a bare `!` reminds you of its form.
     {
-        std::fprintf(stderr, "@@ 7\n"); std::fflush(stderr); Machine  fresh;
-        std::fprintf(stderr, "@@ 8\n"); std::fflush(stderr); Monitor  mf(fresh);
+        Machine  fresh;
+        Monitor  mf(fresh);
         std::ostringstream o;
-        std::fprintf(stderr, "@@ 9\n"); std::fflush(stderr); mf.exec(".", o); std::fprintf(stderr, "@@ 10\n"); std::fflush(stderr); 
+        mf.exec(".", o);
         CHECK(o.str().find("nothing to repeat") != std::string::npos,
               "a . with no prior command reports there is nothing to repeat");
     }
-    std::fprintf(stderr, "@@ 11\n"); std::fflush(stderr); 
 
     // ---------------------------------------------------------------------
     // EXAMINE *IS* THE CPU (Patrick, 2026-07-12)
