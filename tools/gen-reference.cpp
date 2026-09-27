@@ -201,7 +201,7 @@ const char* boardCategory(const std::string& n) {
     if (n == "680io" || n == "mps") return "Serial";
     if (n == "680kcacr") return "Tape";
     if (n == "680uio") return "Parallel and printer";
-    if (n == "mpt") return "Timers";
+    if (n == "mpt" || n == "mpid") return "Timers";
     return nullptr;
 }
 

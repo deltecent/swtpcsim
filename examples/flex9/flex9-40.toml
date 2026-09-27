@@ -31,6 +31,12 @@ base = E004
   baud    = 9600
 
 [[board]]
+type    = "mpid"
+id      = "mpid0"
+base    = E080
+line_hz = 60
+
+[[board]]
 type   = "dc4"
 id     = "dc40"
 base   = E018

@@ -59,6 +59,7 @@ and within a group the boards are in **alphabetical order**.
 
 | Type | What it is |
 |---|---|
+| [`mpid`](#mpid) | SWTPC MP-ID: 6840 line-clock timer and PIA printer port (S/09) |
 | [`mpt`](#mpt) | SWTPC MP-T: a 6820 PIA interrupt timer on an SS-30 slot |
 
 
@@ -286,6 +287,26 @@ Altair 680b Universal I/O: a second 6850 ACIA serial port ('serial') and a 6820 
 
 
 ## Timers
+
+### `mpid`
+
+SWTPC MP-ID interface driver board (S/09): a 6820 PIA at base (default $E080) and an MC6840 timer at base+$10 ($E090). The 6840 counts the power line -- 2 x line_hz pulses a second into C1 and C3, O3 into C2 -- and a 74LS393 counts O1 onto PIA side A, the clock FLEX9's TIME reads. PIA side B is a printer port ('lpt'). The 6840 and both PIA IRQs pull the bus IRQ
+
+**Units:** `lpt` (serial, CONNECT)
+
+#### Board properties
+
+| Key | Kind | Default | Legal | Meaning |
+|---|---|---|---|---|
+| `base` | int | `0xE080` | C080, C480, ... DC80 \| E080, E480, ... FC80 | Port 8 of the I/O block: the PIA at base..base+F, the 6840 at base+10..base+1F. The block (C000 or E000) and the 1K segment are jumpers |
+| `line_hz` | int | `60` | 50 \| 60 | The power-line frequency. The line pulse clocks the 6840 at twice it: 120 pulses a second on 60 Hz, 100 on 50 Hz |
+
+#### Unit `lpt` — `[board.unit.lpt]`
+
+| Key | Kind | Default | Legal | Meaning |
+|---|---|---|---|---|
+| `connect` | string | `null` | text | The endpoint the printer port writes to (CONNECT sets this) |
+
 
 ### `mpt`
 

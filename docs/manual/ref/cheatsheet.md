@@ -136,6 +136,7 @@ Type the part before the bracket.
 
 | Type | What it is |
 |---|---|
+| `mpid` | SWTPC MP-ID: 6840 line-clock timer and PIA printer port (S/09) |
 | `mpt` | SWTPC MP-T: a 6820 PIA interrupt timer on an SS-30 slot |
 
 ## Machines

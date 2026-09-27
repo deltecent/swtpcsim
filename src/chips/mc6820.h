@@ -65,6 +65,11 @@ public:
     // leaves the input latch alone.
     void strobeC1(int section);
 
+    // Levels on the input lines with no strobe behind them -- a counter wired straight
+    // to the port (the SWTPC MP-ID's 74LS393 on side A). A Data read sees them on the
+    // lines the DDR leaves as inputs; the C1 flag is untouched.
+    void setInput(int section, uint8_t lines);
+
     // Control bit 1: does C1 respond to the rising edge (true) or the falling one?
     bool c1RisingEdge(int section) const;
 

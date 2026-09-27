@@ -4,6 +4,7 @@
 #include "boards/mits-680io.h"
 #include "boards/mits-680uio.h"
 #include "boards/swtpc-mps.h"
+#include "boards/swtpc-mpid.h"
 #include "boards/swtpc-mpt.h"
 #include "boards/terminal-font.h"
 #include "host/display_null.h"
@@ -74,6 +75,7 @@ const struct {
     {"680kcacr", test_680kcacr},
     {"swtpc_mps", test_swtpc_mps},
     {"swtpc_mpt", test_swtpc_mpt},
+    {"swtpc_mpid", test_swtpc_mpid},
     {"mc6840", test_mc6840},
     {"swtpc_dc4", test_swtpc_dc4},
     {"lamp", test_lamp},
@@ -116,6 +118,7 @@ int main(int argc, char** argv) {
     swtpc::MpsBoard::setResolver(swtpc::resolveEndpoint);
     swtpc::Serial1602Board::setResolver(swtpc::resolveEndpoint);
     swtpc::MptBoard::setResolver(swtpc::resolveEndpoint);
+    swtpc::MpidBoard::setResolver(swtpc::resolveEndpoint);
 
     // The generic terminal endpoint reads these (issue #244). A NullDisplay is not
     // windowed, so `terminal:` refuses at CONNECT here -- which test_terminal asserts,
