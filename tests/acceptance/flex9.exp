@@ -5,7 +5,9 @@
 # restores drive 0, reads track 0 sector 1 into $C000 and jumps there; FLEX9 loads, signs on,
 # asks the date, and drops to its `+++` prompt. Typing CAT and getting the directory back is
 # the 6809 core, the DAT, the I/O window at E000, the WD179x read path and the FLEX filesystem
-# all working at once. This is the 6809's boot gate (DESIGN.md 3.2).
+# all working at once. This is the 6809's boot gate (DESIGN.md 3.2). With no "Timer not
+# available." at boot and TIME's elapsed line after CAT, it is also the MP-ID's gate: its 6840
+# counting the line pulses and IC7 counting timer 1's time-outs, as FLEX9 reads them.
 #
 # IT HAS TO BE AN EXPECT TEST, not a pipe: the console read is polled, so a keystroke only
 # lands if the guest is sitting in its read loop, and only a tty paces bytes to the emulated
@@ -46,7 +48,10 @@ expect {
 
 # BOOT FLEX9. `U` is a single-letter S-BUG command -- no CR.
 send "U"
+# FLEX probes for the MP-ID's 6840 at E090 before it signs on. Listed first, so it wins when
+# the sign-on is already in the buffer too.
 expect {
+    -ex "Timer not available." { puts "FAIL: FLEX9 found no timer -- the MP-ID's 6840 is not at E090"; exit 1 }
     -ex "FLEX - Version 2.8:3" {}
     eof     { puts "FAIL: the machine died booting FLEX9"; exit 1 }
     timeout { puts "FAIL: FLEX9 never signed on -- the `U` boot did not load the system"; exit 1 }
@@ -65,8 +70,9 @@ expect {
     timeout { puts "FAIL: FLEX9 took the date but never reached its `+++` prompt"; exit 1 }
 }
 
-# CAT reads the directory off the disk -- the WD179x read path, sector by sector.
-send "CAT\r"
+# CAT reads the directory off the disk -- the WD179x read path, sector by sector. It runs
+# under TIME, which reads the MP-ID's 6840 and PIA (see the date prompt above).
+send "TIME CAT\r"
 expect {
     -ex "CATALOG OF DRIVE NUMBER 0" {}
     eof     { puts "FAIL: the machine died running CAT"; exit 1 }
@@ -83,7 +89,15 @@ expect {
     timeout { puts "FAIL: CAT listed files but never finished (no free-space line)"; exit 1 }
 }
 
-# ...and CAT returned to the prompt.
+# TIME counted line pulses on the 6840 across the CAT and prints how long it took.
+expect {
+    -ex "Elapsed time was" {}
+    -ex "No timer available" { puts "FAIL: TIME found no timer"; exit 1 }
+    eof     { puts "FAIL: the machine died after CAT, in TIME"; exit 1 }
+    timeout { puts "FAIL: TIME never printed the elapsed time"; exit 1 }
+}
+
+# ...and TIME returned to the prompt.
 expect {
     -ex "+++" {}
     eof     { puts "FAIL: CAT listed the directory but the console did not return to `+++`"; exit 1 }
@@ -98,6 +112,6 @@ if {$before ne $after} {
     exit 1
 }
 
-puts "OK: $dsk -- FLEX9 booted through S-BUG's `U` to its +++ prompt, CAT listed the directory off\
-      the disk, and the image is byte-identical."
+puts "OK: $dsk -- FLEX9 booted through S-BUG's `U` to its +++ prompt, TIME CAT listed the directory\
+      off the disk and timed it, and the image is byte-identical."
 exit 0

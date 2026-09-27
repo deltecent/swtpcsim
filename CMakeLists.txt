@@ -412,6 +412,8 @@ add_library(swtpc_core STATIC
   # The 6820/6821 PIA -- Motorola's parallel-interface part. The 88-4PIO models it
   # inline; this shared register model is what the Altair 680b UI/O reuses.
   src/chips/mc6820.cpp
+  # The MC6840 PTM -- three 16-bit timers; the MP-ID's line-clocked timer (chips/mc6840.h).
+  src/chips/mc6840.cpp
   # The TMS 5501 -- TI's NMOS I/O controller (UART + five timers + an eight-source
   # interrupt controller). Phase 1 models the UART half only; the Cromemco 4FDC/16FDC/
   # 64FDC each carry one as a console channel, and the TU-ART carries two. See
@@ -440,6 +442,7 @@ add_library(swtpc_core STATIC
   # at a configurable slot base (default $8004/$8005), the board SWTBUG talks to.
   src/boards/swtpc-mps.cpp
   src/boards/swtpc-dc4.cpp
+  src/boards/swtpc-mpid.cpp
   src/boards/swtpc-mpt.cpp
   # The two MITS hard-sector floppy controllers, and the register model they share.
   # HardSectorFdc is not a convenience: MITS built the 88-MDS to present the 88-DCDD's
@@ -672,6 +675,8 @@ add_executable(swtpc_tests
   tests/test_680uio.cpp
   tests/test_swtpc_mps.cpp
   tests/test_swtpc_mpt.cpp
+  tests/test_swtpc_mpid.cpp
+  tests/test_mc6840.cpp
   tests/test_swtpc_dc4.cpp
   tests/test_lamp.cpp
   tests/test_boundary.cpp

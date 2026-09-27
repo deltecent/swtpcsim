@@ -9,6 +9,7 @@
 #include "boards/mits-680uio.h"
 #include "boards/swtpc-mps.h"
 #include "boards/swtpc-dc4.h"
+#include "boards/swtpc-mpid.h"
 #include "boards/swtpc-mpt.h"
 
 namespace swtpc {
@@ -32,6 +33,7 @@ std::vector<BoardType> boardTypes() {
         {"680kcacr", "Altair 680b KCACR: Kansas City audio cassette", "Altair 680b KCACR audio-cassette interface: a 1602-family UART recording Kansas City Standard FSK, memory-mapped at F010 (status/control) and F011 (data), active-LOW. Adds software motor control (control D7=on, D6=off) and interrupt-driven transfer (D0/D1 enables pull the 6800 IRQ). MOUNT a tape, WIND/REWIND it"},
         {"mps", "SWTPC MP-S: one 6850 serial port on an SS-30 slot", "SWTPC MP-S serial interface: a 6850 ACIA console ('tty') on an SS-30 slot, control/status at the slot base and Rx/Tx data at base+1 (default $8004/$8005, the console slot). Memory-mapped; the ACIA IRQ pulls the 6800 IRQ. The board SWTBUG/MIKBUG's terminal routines assume"},
         {"dc4", "SWTPC DC-4: WD179x 5.25\" floppy controller", "SWTPC DC-4 floppy disk controller: a WD179x (1 MHz) with up to four 5.25\" drives (drive0..3). Spans two SS-30 ports -- a true-sense drive/side select latch at $8014 and the WD179x registers at $8018-$801B (default). Memory-mapped, DRQ-polled. FLEX 2.0/3.0 boots from it via SWTBUG's 'D' command"},
+        {"mpid", "SWTPC MP-ID: 6840 line-clock timer and PIA printer port (S/09)", "SWTPC MP-ID interface driver board (S/09): a 6820 PIA at base (default $E080) and an MC6840 timer at base+$10 ($E090). The 6840 counts the power line -- 2 x line_hz pulses a second into C1 and C3, O3 into C2 -- and a 74LS393 counts O1 onto PIA side A, the clock FLEX9's TIME reads. PIA side B is a printer port ('lpt'). The 6840 and both PIA IRQs pull the bus IRQ"},
         {"mpt", "SWTPC MP-T: a 6820 PIA interrupt timer on an SS-30 slot", "SWTPC MP-T interrupt timer: a 6820 PIA on an SS-30 slot (default $8010-$8013). Side B drives an MK5009 time base -- PB0-PB3 select 1 us to 1 hour, PB7 holds it in reset -- whose output interrupts on CB1; side A is a buffered 8-bit input port with a CA1 strobe. Memory-mapped; both PIA IRQs pull the 6800 IRQ"},
     };
 }
@@ -46,6 +48,7 @@ std::unique_ptr<Board> makeBoard(const std::string& type) {
     if (type == "680kcacr") return std::make_unique<KcacrBoard>();
     if (type == "mps") return std::make_unique<MpsBoard>();
     if (type == "dc4") return std::make_unique<Dc4Board>();
+    if (type == "mpid") return std::make_unique<MpidBoard>();
     if (type == "mpt") return std::make_unique<MptBoard>();
     return nullptr;
 }

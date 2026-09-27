@@ -70,6 +70,8 @@ bool Pia6820::takeOutput(int section, uint8_t& out) {
 
 void Pia6820::strobeC1(int section) { sec_[section & 1].inFull = true; }
 
+void Pia6820::setInput(int section, uint8_t lines) { sec_[section & 1].inLatch = lines; }
+
 bool Pia6820::c1RisingEdge(int section) const { return (sec_[section & 1].ctrl & kC1Rising) != 0; }
 
 uint8_t Pia6820::outputRegister(int section) const { return sec_[section & 1].outReg; }

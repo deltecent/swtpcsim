@@ -83,6 +83,9 @@ shipped with. The **`swtpcsim>` monitor** is the host prompt you reach with `^E`
 running inside the machine, but you, standing in front of it, with a much better console than
 the hardware ever had.
 
+**MP-ID** — SWTPC's interface driver board for its 6809 systems. It carries a 6840 timer that
+counts the power line, which is FLEX9's timer, and a PIA printer port. `mpid` in a machine file.
+
 **MP-T** — SWTPC's interrupt timer board: a 6820 PIA and a time-base chip on the SS-30 bus,
 interrupting the 6800 once every interval a program picks, from 1 µs to 1 hour. `mpt` in a
 machine file.

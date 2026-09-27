@@ -43,6 +43,15 @@ base = E004
   connect = "console"
   baud    = 9600
 
+# The MP-ID interface driver board: on the real S/09 it drives the I/O bus, so there is
+# always one. Its 6840 at E090 counts the power line -- FLEX9 looks for it at boot, and
+# TIME reads it. Its PIA at E080 is a printer port (unit lpt).
+[[board]]
+type    = "mpid"
+id      = "mpid0"
+base    = E080
+line_hz = 60
+
 # The DC-4 floppy controller on SS-30 slots 5+6: the drive-select latch at E014 and the
 # WD179x at E018-E01B. S-BUG's `U` restores drive 0, reads track 0 sector 1 into $C000
 # and jumps there (SBUG.ASM: MINBOOT). No disk is mounted by default.

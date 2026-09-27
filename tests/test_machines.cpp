@@ -210,14 +210,16 @@ void test_machines() {
 
     Machine m9;
     CHECK(loadMachine(*s9, m9, err), "swtpc09 loads");
-    CHECK(m9.boards().size() == 4,
-          "an MP-09, an mps serial console, a dc4 floppy controller, and a memory card");
+    CHECK(m9.boards().size() == 5,
+          "an MP-09, an mps serial console, an mpid, a dc4 floppy controller, and a memory card");
     CHECK(m9.cpu() != nullptr && m9.isa() == "6809", "it speaks 6809");
 
     m9.bus.memWrite(0xDFFF, 0x21);
     CHECK(m9.bus.memRead(0xDFFF) == 0x21, "DFFF is the top of the 56K of RAM");
     (void)m9.bus.memRead(0xE004);
     CHECK(!m9.bus.lastUnclaimed(), "E004 is the MP-S ACIA -- a board answers");
+    (void)m9.bus.memRead(0xE090);
+    CHECK(!m9.bus.lastUnclaimed(), "E090 is the MP-ID's 6840, where FLEX9 looks for a timer");
     (void)m9.bus.memRead(0xE018);
     CHECK(!m9.bus.lastUnclaimed(), "E018 is the DC-4 WD179x command/status");
     (void)m9.bus.memRead(0xE014);
