@@ -181,6 +181,53 @@ writes Kansas City modulation only.
 
 ---
 
+## 4. FLEX9 on the SWTPC 6809
+
+```
+$ swtpcsim examples/flex9/flex9-40.toml
+```
+
+```
+S-BUG 1.8 - 56K
+>
+```
+
+This is the SWTPC 6809: the MP-09 processor board with its **S-BUG** monitor, and a FLEX9 disk
+in drive 0. S-BUG sets up the board's address translator, counts the RAM, and prints the total.
+Its disk-boot command is **`U`**:
+
+```
+>U
+Timer not available.
+
+FLEX - Version 2.8:3 - 56K
+
+Date (MM,DD,YY)? 1,15,80
+
++++CAT
+
+CATALOG OF DRIVE NUMBER 0
+DISK: FLEX9-2  #0
+
+ NAME   TYPE    SIZE  PRT  SUR
+
+CAT     .CMD       3
+CATF    .CMD       5
+CATW    .CMD       2
+FLEX    .SYS      25
+...
+```
+
+`Timer not available.` is FLEX's own message: this machine has no timer board, and FLEX runs
+without one. The disk is mounted read-only, as in the FLEX 2.0 example. The folder also has
+`flex9-35.toml` and `flex9-DS.toml`, the same FLEX9 on a 35-track disk and on a double-sided
+one, and both disks are included.
+
+To see where S-BUG put everything, stop with `^E` and type `SHOW cpu0`. The `dat` line is the
+address translator's map, and in a 56K system it maps every 4K block to itself.
+
+---
+
 ## Where to go next
 
 - **The examples this chapter did not walk through** — `examples/`, and the README in each folder.

@@ -57,27 +57,29 @@ period artifacts and test programs written for real silicon — not somebody's e
 | `sbug_src.txt` + `SBUG_S1.TXT` + `SBUG_Listing.pdf` + `SBUG_UsersGuide.pdf` | The **S-BUG 1.8** 6809 monitor: its assembly source (Clark and Watson, modified to 1.8 by Randy Jarrett), the ROM image in Motorola S1 records (2048 bytes, `F800`–`FFFF`, CRC32 `10A045A7`), the assembled listing, and SWTPC's *6809 SBUG-E Monitor ROM Version 1.5* user's guide (circa 1980; scanned/edited by Michael Holley Nov 11 2000, **real text layer**). Fetched 2026-09-27 from deramp.com (`.../swtpc/hardware/MP_09 6809 CPU Board/`). | `reference/S-BUG Monitor.md`. The firmware in the MP-09's IC4: the reset sequence (DAT identity load, the `$55AA` RAM search, the `LRARAM` table at `DFD0`), the `DFC0`–`DFFF` RAM map, the entry table at `F800`, the commands, the `>` prompt and `S-BUG 1.8 - nnK` sign-on, and the **`U` minifloppy boot** (DC-x at `E014`/`E018`, sector 1 of track 0 into `C000`). ⚠ The source's line 383 holds two instructions; the image has both. Where the v1.5 guide and the 1.8 source differ, the source wins. |
 | `FLEX9 -ReadMe.pdf` | Mike Douglas's one-page note for *PC2Flop and Flop2PC (for SWTPC DC-x Controllers in SWTPC 6809)* — the `-ReadMe.pdf` of the folder that holds the **FLEX9 2.8:3** disk images `FLEX9-2.83-35/40/DS.DSK`. **Real text layer.** Renamed on download (the original is `-ReadMe.pdf`, which collides with the 6800 FLEX folder's). Fetched 2026-09-27 from deramp.com (`.../swtpc/software/FLEX/6809 FLEX/Disk Image Transfer/`). | The provenance of the FLEX9 boot disk for `swtpc09`: the images are for a SWTPC 6809 with S-BUG and a DC-x controller (single-sided 35/40-track, double-sided 40-track on a DC-3/DC-4). The 40-track image's boot sector sets DP to `E0` and drives the controller at `<$14`/`<$18`/`<$1B` — `E014`/`E018`/`E01B`, where S-BUG's `U` finds it. |
 
-## `examples/flex/` and `examples/cp68/` — the FLEX and CP/68 boot disks
+## `examples/flex/`, `examples/flex9/` and `examples/cp68/` — the FLEX and CP/68 boot disks
 
-`examples/flex/` and `examples/cp68/` ship a `.toml` per bootable machine plus the
+`examples/flex/`, `examples/flex9/` and `examples/cp68/` ship a `.toml` per bootable machine plus the
 disk it mounts. `.gitignore` handles the `.DSK` images as an **allowlist**: the images are
 media, not ours, so the default is to keep them out of the tree — but a boot example whose disk
 you have to download first is an example that does not run on a fresh clone, and the `swtpc`
-quick start and the FLEX acceptance test both boot one. So exactly the two disks those need are
+quick start and the FLEX acceptance tests boot them. So exactly the disks those need are
 named, one `!`-line each, and every sibling stays out.
 
-All of it is from **deramp.com** (Mike Douglas's archive), fetched 2026-09-13/14:
+All of it is from **deramp.com** (Mike Douglas's archive), fetched 2026-09-13/14 (FLEX9 on 2026-09-27):
 
 | Tracked file | Bytes | SHA-256 (tree) | Source, and what it boots |
 |---|---|---|---|
 | `examples/flex/FLEX2-40.DSK` | 102,400 | `1b710f46…c3fd01` | `.../swtpc/software/FLEX/` — Mike Douglas's *FLEX Disk Images for the SWTPC 6800 Computer* (his `-ReadMe.pdf` is kept beside it, untracked). A **6800-compatible FLEX 2.0** boot disk, 40-track single-sided. `examples/flex/flex2-40.toml` → SWTBUG `$`, `D` → the FLEX `+++` prompt. |
+| `examples/flex9/FLEX9-2.83-40.DSK` | 102,400 | `736dc15c…da9271b` | `.../swtpc/software/FLEX/6809 FLEX/Disk Image Transfer/` — Mike Douglas's *PC2Flop and Flop2PC (for SWTPC DC-x Controllers in SWTPC 6809)* (its `-ReadMe.pdf` is the `FLEX9 -ReadMe.pdf` row above). TSC's **FLEX9 2.8:3**, 40-track single-sided. `examples/flex9/flex9-40.toml` → S-BUG `>`, `U` → the FLEX `+++` prompt. |
+| `examples/flex9/FLEX9-2.83-35.DSK` | 89,600 | `91a6779f…aeb3dac9` | The same folder. FLEX9 2.8:3, 35-track single-sided. `examples/flex9/flex9-35.toml`, booted the same way. |
+| `examples/flex9/FLEX9-2.83-DS.DSK` | 204,800 | `09d4e5b1…afc2b2b` | The same folder. FLEX9 2.8:3, 40-track double-sided. `examples/flex9/flex9-DS.toml`, booted the same way. |
 | `examples/cp68/CP68.DSK` | 80,640 | `3876c8a0…b9694d` | `.../swtpc/software/CP68/` — TSC's **CP/68 1.0** (Hemenway Associates); the deramp thanks-to note credits Roberto Sancho Villa for the archival. Single-density, 128-byte sectors, `35×1×18` (the DC-4's `cp68` geometry). `examples/cp68/cp68.toml` → `D` → `HEMENWAY ASSOCIATES CP/68-1.0` and its `.` prompt. |
 
 The SHA-256 is of the file **as it sits in the tree** — a fixed target for a re-fetch to be
-compared against, not a claim about which byte-for-byte download it began as (both were mounted
-read-only here, so neither was written by the simulator). The five sibling FLEX images
-(`FLEX2-35/DS`, `FLEX3-35/40/DS`) and CP/68's utilities are **not** tracked; the flex directory's
-own `README.md` points at the same deramp folder to fetch them. The FLEX geometry probe and the
+compared against, not a claim about which byte-for-byte download it began as (all were mounted
+read-only here, so none was written by the simulator). The five sibling FLEX images
+(`FLEX2-35/DS`, `FLEX3-35/40/DS`) and CP/68's utilities are **not** tracked; the `flex` and `cp68` directories' own `README.md` files point at their deramp folders to fetch them. The FLEX geometry probe and the
 CP/68 track-0 sector-ID map are in `src/boards/swtpc-dc4.cpp`.
 
 ## Traps, paid for once

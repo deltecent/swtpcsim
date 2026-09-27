@@ -1,7 +1,7 @@
 # SWTPC MP-09 processor board (`mp09`)
 
 **Status:** done for the standard board (DAT and IC4). It is the CPU of the built-in `swtpc09`
-machine, which comes up to S-BUG's prompt. Its FLEX9 boot is issue #3.
+machine, which boots FLEX9 2.8:3 through S-BUG's `U` command.
 
 ## The real hardware
 
@@ -111,6 +111,9 @@ neither states: which logical addresses bypass the DAT. That is inferred from S-
   - SNAPSHOT carrying the DAT.
 
   Breaking the complement or the bypass fails the suite.
+- `tests/acceptance/flex9.exp` boots each of the three `examples/flex9/` disks through the
+  real CLI: S-BUG from the power-up DAT to its prompt, `U` to FLEX9's `+++`, and `CAT` of the
+  whole directory. Breaking the complement fails it at S-BUG's sign-on.
 - `tests/test_roms.cpp` checks S-BUG's CRC32 (`10A045A7`) against `docs/roms.md`.
 
 ## References

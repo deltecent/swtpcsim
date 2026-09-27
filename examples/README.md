@@ -12,6 +12,7 @@ swtpcsim examples/altair680/altair680-uio.toml      # Altair 680b + Universal I/
 swtpcsim examples/altair680/altair680-kcacr.toml    # Altair 680b + KCACR audio-cassette interface
 swtpcsim examples/flex/flex2-40.toml                # SWTPC 6800 + DC-4, boots FLEX 2.0  ($ D)
 swtpcsim examples/cp68/cp68.toml                    # SWTPC 6800 + DC-4, boots CP/68 1.0 ($ D)
+swtpcsim examples/flex9/flex9-40.toml               # SWTPC 6809 + DC-4, boots FLEX9 2.8:3 (> U)
 swtpcsim examples/debugger/debugger.toml            # a bare 6800 for learning the symbolic debugger
 ```
 
@@ -19,6 +20,7 @@ swtpcsim examples/debugger/debugger.toml            # a bare 6800 for learning t
 |---|---|
 | [`altair680/`](altair680/) | The built-in **`altair680`** machine — a Motorola 6800 with MON680 on its onboard 6850 console, to the `.` prompt — with a period expansion board added. `altair680-uio.toml` fits the **Universal I/O board** (`680uio`): a second 6850 serial port and a 6820 PIA. `altair680-kcacr.toml` fits the **KCACR audio-cassette interface** (`680kcacr`) and its loader PROM at `FD00`; `.J FD00` reads an S-record cassette into memory. See the directory's own README. |
 | [`flex/`](flex/) | The built-in **`swtpc`** machine — a Motorola 6800 with SWTBUG on its MP-S console and a DC-4 floppy (`dc4`) — with a **FLEX** boot disk mounted. Six machine files cover FLEX 2.0 and 3.0 in the DC-4's three geometries (35-track/40-track single-sided, 40-track double-sided); `$ D` boots FLEX to its `+++` prompt. `FLEX2-40.DSK` ships; the rest are a download away. See the directory's own README. |
+| [`flex9/`](flex9/) | The built-in **`swtpc09`** machine — the SWTPC 6809, an MP-09 processor board with S-BUG, an MP-S console at `E004` and a DC-4 floppy — with a TSC **FLEX9 2.8:3** disk mounted. Three machine files cover the DC-4's three geometries (35-track/40-track single-sided, 40-track double-sided), and all three disks ship. `> U` boots FLEX9 to its `+++` prompt. See the directory's own README. |
 | [`cp68/`](cp68/) | The same `swtpc` machine booting **TSC's CP/68 1.0** (`cp68.toml`) from `CP68.DSK`. `$ D` boots to the `HEMENWAY ASSOCIATES CP/68-1.0` sign-on and its `.` prompt — a CP/M-style DOS on a single-density 128-byte-sector disk whose track 0 is numbered `0,1,2,4..18`. |
 
 ## Learning the tools

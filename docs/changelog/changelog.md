@@ -8,17 +8,18 @@ as it is now; this document is the record of how it got there.
 
 ## 0.0.1
 
-The first release — a simulator of **Motorola 6800** machines (the SWTPC 6800 on the SS-50/SS-30
-bus, and the MITS Altair 680b), in C++20, with **nothing to fetch**: the TOML parser, the JSON encoder and the line editor are all
+The first release — a simulator of **Motorola 6800 and 6809** machines (the SWTPC 6800 and 6809 on
+the SS-50/SS-30 bus, and the MITS Altair 680b), in C++20, with **nothing to fetch**: the TOML parser, the JSON encoder and the line editor are all
 in-tree, so a fresh clone builds with a C++20 compiler and CMake and no network. SDL3 is
 optional and detected, never required.
 
-### Two machines that boot from a bare command line
+### Machines that boot from a bare command line
 
 - **`swtpcsim swtpc`** brings up an SWTPC 6800 under **SWTBUG**, its ROM monitor, with an
   MP-S serial console and a DC-4 floppy controller. **FLEX 2.0** boots from drive 0.
 - **`swtpcsim swtpc09`** brings up an SWTPC 6809: the **MP-09** processor board under
   **S-BUG 1.8**, with 56K of RAM, an MP-S console at `E004` and a DC-4 floppy controller.
+  **FLEX9 2.8:3** boots from `examples/flex9/` with S-BUG's `U` command.
 - **`swtpcsim altair680`** brings up a MITS **Altair 680b** under **MON680**, the 680b's own
   ROM monitor, on a single 6850 ACIA — and the **KCACR** Kansas City audio-cassette interface
   loads and saves off tape.

@@ -989,6 +989,28 @@ if(EXPECT_EXECUTABLE)
                        LABELS acceptance TIMEOUT 120
                        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+  # ---------------------------------------------------------------------------
+  # FLEX9 off the DC-4 on the SWTPC 6809: the 6809's boot gate (DESIGN.md 3.2).
+  #
+  # The `swtpc09` machine's integration oracle. The 6809 core, the MP-09's DAT (loaded by
+  # S-BUG from its power-up junk), S-BUG's `U` boot, the I/O window at E000, the WD179x read
+  # path and the FLEX filesystem all have to be right for FLEX9 to reach `+++` and CAT the
+  # disk. The FLEX9 2.8:3 disks (examples/flex9/) are in the tree, mounted
+  # write-protected and shasummed before and after. All three shipped geometries boot, each
+  # from its own example machine file: every disk in examples/flex9/ is booted by a test.
+  # ---------------------------------------------------------------------------
+  foreach(geom 35 40 DS)
+    add_test(NAME acceptance-flex9-${geom}
+             COMMAND ${EXPECT_EXECUTABLE}
+                     -f ${CMAKE_CURRENT_SOURCE_DIR}/tests/acceptance/flex9.exp
+                     $<TARGET_FILE:swtpcsim>
+                     examples/flex9/flex9-${geom}.toml
+                     examples/flex9/FLEX9-2.83-${geom}.DSK)
+    set_tests_properties(acceptance-flex9-${geom} PROPERTIES
+                         LABELS acceptance TIMEOUT 120
+                         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+  endforeach()
+
 else()
   message(STATUS "expect not found -- SKIPPING every interactive (pty-driven) acceptance "
                  "test, not just acceptance-cli: none of the tests that type at a guest are "

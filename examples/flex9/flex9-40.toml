@@ -1,0 +1,52 @@
+# Boot FLEX9 2.8:3 from FLEX9-2.83-40.DSK on the SWTPC 6809 (MP-09 + S-BUG, MP-S console, DC-4 floppy):
+#
+#     swtpcsim examples/flex9/flex9-40.toml
+#     S-BUG 1.8 - 56K
+#     >U                      (S-BUG mini-floppy boot -> FLEX9 sign-on, the date, its +++ prompt)
+#
+# FLEX9-2.83-40.DSK is a 40-track single-sided image (100K). The DC-4 board probes the geometry
+# from the image size, so nothing here configures tracks/sides. Drive 0 is mounted READ-ONLY so
+# looking around FLEX can never dirty the image; drop writeprotect to save files back.
+#
+# This is the built-in swtpc09 machine with the disk mounted -- see that machine
+# (`swtpcsim -x 'SHOW MACHINE' swtpc09`) for why each board and address is what it is.
+
+[machine]
+name    = "flex9-40"
+startup = ["RESET", "RUN"]
+
+[[board]]
+type     = "mp09"
+id       = "cpu0"
+clock_hz = 0
+rom      = "builtin:sbug"
+
+[[board]]
+type = "mps"
+id   = "mps0"
+base = E004
+
+  [board.unit.tty]
+  connect = "console"
+  baud    = 9600
+
+[[board]]
+type   = "dc4"
+id     = "dc40"
+base   = E018
+drives = 4
+
+  [[board.drive]]
+  unit         = 0
+  mount        = "FLEX9-2.83-40.DSK"
+  writeprotect = true
+
+[[board]]
+type = "memory"
+id   = "mem0"
+fill = "random"
+
+  [[board.region]]
+  type = "ram"
+  at   = 0000
+  size = "56K"

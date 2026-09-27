@@ -331,7 +331,7 @@ The CPU is not "done" until it passes its opcode-and-flag suites and then boots 
 
 **A validation harness may not emulate the thing it is validating.** The framework established that rule on its 8080 core, and the 6800 inherits it. The 8080 gate ran the period **TST8080 / 8080PRE / CPUTEST / 8080EXM** CP/M `.COM` suites with *no* CP/M and *no* console card — via a BDOS stub written in **real 8080 machine code**, reached through the real `JMP` at `0005`, writing to a real port on a real board. Trapping `PC == 0005` in C++ would have been less code and was rejected: it would fake the `CALL`, the `RET`, the stack and the `OUT` inside the one program whose job is to check that we implement them correctly.
 
-**The 6809 has passed the first half of that gate, not the second.** `tests/test_isa6809.cpp` decodes every opcode on all three pages and round-trips each one through the assembler. `tests/test_cpu6809.cpp` executes each instruction group with its flag rules and cycle counts, every indexed post-byte form, the interrupt stacking (`E` set for the full frame, clear for `FIRQ`), `CWAI`/`SYNC`, and NMI disarmed until `S` is loaded. The expected values come from the Motorola programming manual. The disassembler also reads all 811 instructions of the real S-BUG ROM exactly as its source listing gives them. What it has *not* done is boot period software on a whole machine: that is FLEX9 on the `swtpc09` machine (issue #3), and until then the 6809 is a CPU you can bench, not a machine that has been proven.
+**The 6809 has passed both halves of that gate.** `tests/test_isa6809.cpp` decodes every opcode on all three pages and round-trips each one through the assembler. `tests/test_cpu6809.cpp` executes each instruction group with its flag rules and cycle counts, every indexed post-byte form, the interrupt stacking (`E` set for the full frame, clear for `FIRQ`), `CWAI`/`SYNC`, and NMI disarmed until `S` is loaded. The expected values come from the Motorola programming manual. On a whole machine, `tests/acceptance/flex9.exp` boots the `swtpc09` machine through the real CLI: S-BUG loads the MP-09's DAT from its power-up junk and signs on, its `U` command boots **FLEX9 2.8:3** off the DC-4, and `CAT` reads the directory back.
 
 *(A dedicated 6800 or 6809 exerciser of the 8080EXM kind is not in the tree yet.)*
 
@@ -1652,7 +1652,7 @@ The **Limitations** and **Quirks** sections are load-bearing. They are what you 
 
 ## 15. Testing
 
-- **CPU:** opcode, addressing-mode and condition-code coverage in `tests/test_cpu6800.cpp` and `tests/test_isa6800.cpp`, plus booting real SWTBUG / MON680 / FLEX through the acceptance tests (§3.2). The 6809 has the same unit coverage in `tests/test_cpu6809.cpp` and `tests/test_isa6809.cpp`; its boot gate (FLEX9) comes with the `swtpc09` machine. A hard CI gate.
+- **CPU:** opcode, addressing-mode and condition-code coverage in `tests/test_cpu6800.cpp` and `tests/test_isa6800.cpp`, plus booting real SWTBUG / MON680 / FLEX through the acceptance tests (§3.2). The 6809 has the same unit coverage in `tests/test_cpu6809.cpp` and `tests/test_isa6809.cpp`, and its boot gate is S-BUG and FLEX9 on the `swtpc09` machine (`tests/acceptance/flex9.exp`). A hard CI gate.
 - **Bus:** unit tests for decode caching, contention detection, and the floating-bus `FF`.
 - **Boards:** acceptance tests that boot real period software on a whole machine and read back the terminal — FLEX off a DC-4 `.DSK`, MON680 over its 6850 console, and Kansas City Standard cassette.
 - **End-to-end:** headless acceptance scripts in CI on all three platforms (Linux, a universal macOS binary, Windows). Note these drive the monitor via `-s`/`-x` and `expect(1)`, not an MCP `expect` tool — there is no such tool (§11).
@@ -1692,6 +1692,6 @@ Per §0.1, when a future SWTPC/SS-30 board is wanted — an MP-L/MP-LA parallel 
 
 The milestones live in the implementation plan, not a tracked doc. Milestone 1 was **CLI + MCP +
 6800 + bus + RAM + MP-S serial → SWTBUG's `$` prompt**; milestone 2, **the DC-4 floppy booting
-FLEX 2.0**. Both are done, and so is the MC6809 core with its disassembler, assembler and a
-plain `6809` board. What is next — the SWTPC MP-09 (`swtpc09`) booting FLEX9 (issue #3) and the
-remaining reference conversions — is tracked as GitHub issues.
+FLEX 2.0**. Both are done, and so is the 6809: the MC6809 core with its disassembler and
+assembler, a plain `6809` board, and the SWTPC MP-09 in the `swtpc09` machine booting FLEX9. What
+is next — the remaining reference conversions — is tracked as GitHub issues.

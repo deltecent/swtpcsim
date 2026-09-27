@@ -82,6 +82,11 @@ examples/**
 # 40-track single-sided image (102,400 bytes, the DC-4's flex geometry). deramp.com
 # provenance in docs/sources.md. The sibling FLEX2/3 images in the folder are NOT shipped.
 !examples/flex/FLEX2-40.DSK
+# The FLEX9 2.8:3 boot disks, all three geometries: the flex9 example ships each with its machine
+# file, and an acceptance test boots each one. deramp.com provenance in docs/sources.md.
+!examples/flex9/FLEX9-2.83-35.DSK
+!examples/flex9/FLEX9-2.83-40.DSK
+!examples/flex9/FLEX9-2.83-DS.DSK
 # The CP/68 boot disk the cp68 example names: TSC's CP/68 1.0, single-density 35x1x18x128
 # (80,640 bytes, the DC-4's cp68 geometry). deramp.com provenance in docs/sources.md.
 !examples/cp68/CP68.DSK
