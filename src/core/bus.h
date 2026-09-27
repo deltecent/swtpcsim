@@ -9,10 +9,10 @@
 // heard of ROM. Every one of those lives in a board. When you are tempted to
 // add "if (board is a ROM)" here, you have found a bug in your board instead.
 
-#include <bitset>
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace swtpc {
@@ -242,8 +242,7 @@ public:
     // operator RUN/GO so an absent address is re-reported on a later run -- otherwise a
     // guest polling an absent UART thousands of times would bury the console.
     void resetUnclaimedWarnings() {
-        warnedRead_.reset();
-        warnedWrite_.reset();
+        warned_.clear();
         unclaimedHalt_ = false;
     }
 
@@ -367,8 +366,11 @@ private:
     // The unclaimed-I/O diagnostic (DESIGN.md 4.6.1). Default Silent -- opt-in.
     Unclaimed unclaimedPolicy_ = Unclaimed::Silent;
     uint16_t instrPc_ = 0;                // the running instruction's PC, for the message
-    std::bitset<65536> warnedRead_;       // addresses already warned this run: read ...
-    std::bitset<65536> warnedWrite_;      // ... and write, kept apart -- the message names it
+    // Addresses already warned this run, as (write << 16) | addr: read and write kept
+    // apart, since the message names the direction. A SET, not a 64K-bit table per
+    // direction: a warning is the rare path, and two bitsets were 16 KB of every Bus --
+    // two thirds of a Machine, which the monitor and the tests build on the stack.
+    std::unordered_set<uint32_t> warned_;
     bool unclaimedHalt_ = false;          // Halt tripped; the run loop stops at the boundary
     uint16_t haltAddr_ = 0;               // which address, and ...
     bool haltWrite_ = false;              // ... which direction, for the stop message

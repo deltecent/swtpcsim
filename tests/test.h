@@ -14,7 +14,8 @@ extern int g_run;
         }                                                                                \
     } while (0)
 
-#define SECTION(name) std::printf("\n%s\n", name)
+// Flushed, so a crash inside a section still shows which one it was.
+#define SECTION(name) (std::printf("\n%s\n", name), std::fflush(stdout))
 
 void test_clock();
 void test_statefile();

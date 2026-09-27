@@ -137,9 +137,14 @@ int main(int argc, char** argv) {
     }
 
     if (!haveSelectors) {
-        // No args: run the whole table in order -- identical to the historic behavior.
-        for (int t = 0; t < kCount; ++t)
+        // No args: run the whole table in order, each under a header. The header is flushed
+        // before the suite runs so a crash still names the suite it died in -- a SegFault
+        // under ctest otherwise loses everything still sitting in the stdout buffer.
+        for (int t = 0; t < kCount; ++t) {
+            std::printf("== %s ==\n", kTests[t].name);
+            std::fflush(stdout);
             kTests[t].fn();
+        }
     } else {
         // Named selectors: an unknown name is a hard error, so a typo can't run
         // zero tests and print "0 failed" (which would read as a pass).
@@ -162,6 +167,7 @@ int main(int argc, char** argv) {
             }
             if (!selected) continue;
             std::printf("== %s ==\n", kTests[t].name);
+            std::fflush(stdout);
             kTests[t].fn();
         }
     }
