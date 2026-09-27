@@ -21,6 +21,7 @@ and within a group the boards are in **alphabetical order**.
 | Type | What it is |
 |---|---|
 | [`6800`](#6800) | Altair 680b / SWTPC CPU board: a Motorola 6800 |
+| [`6809`](#6809) | CPU board: a Motorola 6809 |
 
 **Memory**
 
@@ -61,6 +62,21 @@ and within a group the boards are in **alphabetical order**.
 Altair 680b / SWTPC CPU board: a Motorola 6800. Decodes nothing -- it drives the bus. Memory-mapped I/O
 
 **Units:** `6800` (cpu)
+
+#### Board properties
+
+| Key | Kind | Default | Legal | Meaning |
+|---|---|---|---|---|
+| `clock_hz` | int | `0` | `0` .. `100000000` | Crystal on the board. 0 runs flat out -- as fast as the host can. |
+| `idle` | bool | `true` | `on` \| `off` | Stand down when the guest is only polling an empty keyboard. On by default -- the guest cannot tell, and a prompt stops burning a core. |
+| `achieved_hz` | int | — | — | LIVE: cycles per real second the run loop last reached -- the crystal you got, beside the one you asked for. Read-only; 0 until it has run. **(read-only — not a key you may set)** |
+
+
+### `6809`
+
+CPU board: a Motorola MC6809. It decodes nothing. It drives the bus and takes IRQ from the bus. Its FIRQ input is not connected
+
+**Units:** `6809` (cpu)
 
 #### Board properties
 

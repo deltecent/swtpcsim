@@ -200,10 +200,21 @@ to show), and that is the truth about a processor card, not a gap in the table. 
 still has a *unit* (`1 cpu: 6800`), because the processor on the card is a unit like
 any other.
 
+**The 6809 is built the same way.** `src/isa/isa6809.cpp` (disassembler and full
+assembler, both pages of prefixed opcodes and every indexed post-byte),
+`src/cpu/cpu6809.cpp`, and `src/boards/cpu6809card.cpp` — a plain `6809` board: the
+6800 card with the core swapped, and nothing else. It is deliberately **not** the
+MP-09: that card's DAT and S-BUG socket are modeled from its own manual when the
+`swtpc09` machine is built (issue #3). Its FIRQ input is **unconnected**, because the
+SS-50 bus manual in `reference/` names only IRQ and NMI, and a board that invented a
+wire for FIRQ would give the bus a line it may never have had (§0.1). The ISA registry
+moved out of `isa6800.cpp` into `src/isa/isa.cpp`, since it no longer belongs to one
+instruction set.
+
 **The split still pays off, even though no 6800 card here masters the bus.** Making the CPU a `BusMaster` rather than a bus special case is what lets the monitor *find* and *step* the processor generically (`Machine::master()`/`masters()`, a `dynamic_cast<BusMaster*>`), and it is the door a future cycle-stealing card walks through unchanged: a DMA card is simply a `Board` that *becomes* a `BusMaster` when granted the bus, never a bolted-on path in the bus. The framework's S-100 machines used exactly that door for `pHOLD`/`pHLDA` DMA; none of the 6800 machines here do, so the transient-master half was removed — see §4.5 for the heritage note.
 
 **The chip is not the card:**
-- `src/cpu/` — `Cpu6800` (and a future `Cpu6809`): pure instruction cores behind one `CpuCore` interface. No bus, no board, no config. Independently testable, which is what makes the diagnostic gate easy to run (§3.2).
+- `src/cpu/` — `Cpu6800` and `Cpu6809`: pure instruction cores behind one `CpuCore` interface. No bus, no board, no config. Independently testable, which is what makes the diagnostic gate easy to run (§3.2).
 - `src/boards/mits-680cpu.cpp` — the **6800 CPU card**: hosts a `CpuCore`, plugs into the bus, owns the clock property, pulls nothing but reads the IRQ/NMI lines the bus carries, and honors both resets. (It does **not** serialize — nothing does; see §4.)
 
 A card's cores are **units** (§3.0.1) — a plain CPU card has exactly one, and a hypothetical dual-processor card has two with one active. Swapping the *card* is `BOARDS REMOVE` / `BOARDS ADD`, exactly as you'd swap the physical thing.
@@ -232,7 +243,7 @@ So "CPU" is three things wearing one name, and they are separated:
 
 | Layer | What it is | Lives in |
 |---|---|---|
-| **Instruction set** | a **stateless** disassembler: bytes in, text + length out. No registers, no state, no board. Named `"6800"` (and, later, `"6809"`) — a registry key, exactly like `"memory"` is for `makeBoard()`. | `src/isa/` — `disassemblerFor("6800")` |
+| **Instruction set** | a **stateless** disassembler: bytes in, text + length out. No registers, no state, no board. Named `"6800"` or `"6809"` — a registry key, exactly like `"memory"` is for `makeBoard()`. | `src/isa/` — `disassemblerFor("6800")` |
 | **Core** | registers + execute. A plain object; **not** a `Board`. | `src/cpu/` — `Cpu6800` |
 | **Card** | the thing you pull out with your hand: one or more cores, plus the serial port / boot PROM that happen to be on *this* card. | `src/boards/` |
 
@@ -260,7 +271,7 @@ The fallout: on a card that switches cores, when the guest writes the register t
 struct RegDef { const char* name; int bits; /* get, set */ };
 ```
 
-Then `REGS`, `SET REG A=3F`, breakpoint conditions (`BREAK 100 IF A==0`) and the MCP schema **all work for a 6809 the day it lands, with no monitor change** — as adding a whole new ISA to the framework proved before. (`SNAPSHOT` would too, if it existed; §13.) It is the same bet that already paid for `SET`/`SHOW`/TOML/MCP: one schema, no second copy to drift.
+Then `REGS`, `SET REG A=3F`, breakpoint conditions (`BREAK 100 IF A==0`) and the MCP schema **work for the 6809 with no monitor change** — which it did: the 6809 core landed with `D`, `DP`, `U`, `Y` and the `E F H I N Z V C` lamps and `REGS`, `SET REG`, `BREAK … IF` and MCP needed nothing. (`SNAPSHOT` would too, if it existed; §13.) It is the same bet that already paid for `SET`/`SHOW`/TOML/MCP: one schema, no second copy to drift.
 
 #### 3.0.3.1 The status line: the core describes it, the monitor renders it
 
@@ -290,7 +301,9 @@ The 6800 uses that directly: the six condition-code bits `H I N Z V C` are `Flag
 - **`BREAK <addr>`** is the only CPU-flavoured one, and it is just *"PC equals X after a step"* — one comparison against a register the reflection layer already exposes.
 - **`BREAK <kind> <action>`** is a third plane: a **device-event** breakpoint, first member `BREAK TAPE STOP` (halt when a cassette deck reaches its auto-stop mark, so a load can be caught without knowing the loader's end address). There is no bus cycle for *"the tape ran out"*, so it is neither a cycle observer nor a PC compare — the run loop **polls** each board's `takeAutoStop()` edge latch at the instruction boundary and stops there, exactly as `SET BUS UNCLAIMED=HALT` samples its latch (§4.6.1). One table (`kDeviceEvents` in `core/debug.h`) drives the parser, `describe()` and the poll together, so a future member (`PRINTER PAGE`, `LINE CARRIER`, `DISK SEEK`) is a single row. It is still CPU-agnostic — the CPU is never asked anything — so it inherits onto any core for free, the same as the other two.
 
-So the debugger lives in `Machine`, drives `cpu->step(bus)`, and asks only generic questions. **A 6809 card will inherit the entire debugger for free.**
+So the debugger lives in `Machine`, drives `cpu->step(bus)`, and asks only generic questions. **The 6809 card inherited the entire debugger for free.**
+
+What it did *not* inherit for free were two questions the monitor used to answer from 6800 knowledge, and they became core hooks rather than `if (isa == "6809")` in the monitor: **`vectors()`** (the fixed vectors at the top of memory — three for the 6800 plus reset, six plus reset for the 6809 — which `SHOW BUS IRQ` prints) and **`waitingOn()`** (what a parked core is waiting for — `WAI` on the 6800, `CWAI` or `SYNC` on the 6809 — which the halt message names). The disassembler likewise gained **`maxLen()`**, so the `DISASM` byte column is wide enough for a 5-byte 6809 instruction without padding every 6800 line.
 
 ### 3.1 Core semantics
 
@@ -306,7 +319,9 @@ The CPU is not "done" until it passes its opcode-and-flag suites and then boots 
 
 **A validation harness may not emulate the thing it is validating.** The framework established that rule on its 8080 core, and the 6800 inherits it. The 8080 gate ran the period **TST8080 / 8080PRE / CPUTEST / 8080EXM** CP/M `.COM` suites with *no* CP/M and *no* console card — via a BDOS stub written in **real 8080 machine code**, reached through the real `JMP` at `0005`, writing to a real port on a real board. Trapping `PC == 0005` in C++ would have been less code and was rejected: it would fake the `CALL`, the `RET`, the stack and the `OUT` inside the one program whose job is to check that we implement them correctly.
 
-*(A dedicated 6800 exerciser of that same standing — the analogue of 8080EXM — is not in the tree yet; it is the natural companion to the 6809 diagnostic oracle §18 calls for.)*
+**The 6809 has passed the first half of that gate, not the second.** `tests/test_isa6809.cpp` decodes every opcode on all three pages and round-trips each one through the assembler. `tests/test_cpu6809.cpp` executes each instruction group with its flag rules and cycle counts, every indexed post-byte form, the interrupt stacking (`E` set for the full frame, clear for `FIRQ`), `CWAI`/`SYNC`, and NMI disarmed until `S` is loaded. The expected values come from the Motorola programming manual. The disassembler also reads all 811 instructions of the real S-BUG ROM exactly as its source listing gives them. What it has *not* done is boot period software on a whole machine: that is FLEX9 on the `swtpc09` machine (issue #3), and until then the 6809 is a CPU you can bench, not a machine that has been proven.
+
+*(A dedicated 6800 or 6809 exerciser of the 8080EXM kind is not in the tree yet.)*
 
 ---
 
@@ -1623,7 +1638,7 @@ The **Limitations** and **Quirks** sections are load-bearing. They are what you 
 
 ## 15. Testing
 
-- **CPU:** opcode, addressing-mode and condition-code coverage in `tests/test_cpu6800.cpp` and `tests/test_isa6800.cpp`, plus booting real SWTBUG / MON680 / FLEX through the acceptance tests (§3.2). A hard CI gate.
+- **CPU:** opcode, addressing-mode and condition-code coverage in `tests/test_cpu6800.cpp` and `tests/test_isa6800.cpp`, plus booting real SWTBUG / MON680 / FLEX through the acceptance tests (§3.2). The 6809 has the same unit coverage in `tests/test_cpu6809.cpp` and `tests/test_isa6809.cpp`; its boot gate (FLEX9) comes with the `swtpc09` machine. A hard CI gate.
 - **Bus:** unit tests for decode caching, contention detection, and the floating-bus `FF`.
 - **Boards:** acceptance tests that boot real period software on a whole machine and read back the terminal — FLEX off a DC-4 `.DSK`, MON680 over its 6850 console, and Kansas City Standard cassette.
 - **End-to-end:** headless acceptance scripts in CI on all three platforms (Linux, a universal macOS binary, Windows). Note these drive the monitor via `-s`/`-x` and `expect(1)`, not an MCP `expect` tool — there is no such tool (§11).
@@ -1646,7 +1661,9 @@ The rest of `porting-notes.md` is CP/M-guest and hard-sector-disk specific — B
 
 **Nothing that ships is blocked on documentation.** Every board in the two built-in machines — the `6800` CPU, the MP-S serial console (`mps`), the DC-4 floppy (`dc4`), and the Altair 680b's on-board 6850 console and Kansas City Standard cassette — is modeled from a **period manual** in `reference/`, listed in `docs/sources.md`.
 
-Per §0.1, when a future SWTPC/SS-30 board is wanted — an MP-L/MP-LA parallel port, an AC-30 cassette, a CT-64/CT-1024 terminal, or the MP-09 6809 CPU (§18) — it is blocked on its *manual*, not on code. **Ask Patrick and he will source it** — do not reconstruct, guess, or read another simulator.
+Per §0.1, when a future SWTPC/SS-30 board is wanted — an MP-L/MP-LA parallel port, an AC-30 cassette, or a CT-64/CT-1024 terminal — it is blocked on its *manual*, not on code. **Ask Patrick and he will source it** — do not reconstruct, guess, or read another simulator.
+
+**The MP-09 6809 CPU board is no longer blocked**: its assembly instructions, schematic and S-BUG source are located on deramp.com, and the 6809 processor itself is modeled from the Motorola programming manual already in `reference/`. They go through the normal `reference/` distillation when the `swtpc09` machine is built (issue #3).
 
 > **🔴 THE FRAMEWORK ONCE NAMED SIMH's `mits_dsk.c` AS AUTHORITATIVE FOR A DISK CONTROLLER, AND IT WAS FLATLY WRONG.**
 > `mits_dsk.c` is **SIMH**, and §0.1 — the first rule in this document — says we do not learn hardware
@@ -1661,5 +1678,6 @@ Per §0.1, when a future SWTPC/SS-30 board is wanted — an MP-L/MP-LA parallel 
 
 The milestones live in the implementation plan, not a tracked doc. Milestone 1 was **CLI + MCP +
 6800 + bus + RAM + MP-S serial → SWTBUG's `$` prompt**; milestone 2, **the DC-4 floppy booting
-FLEX 2.0**. Both are done. What is next — a 6809 core, the SWTPC MP-09 (`swtpc09`) booting FLEX9,
-and the remaining reference conversions — is tracked as GitHub issues.
+FLEX 2.0**. Both are done, and so is the MC6809 core with its disassembler, assembler and a
+plain `6809` board. What is next — the SWTPC MP-09 (`swtpc09`) booting FLEX9 (issue #3) and the
+remaining reference conversions — is tracked as GitHub issues.

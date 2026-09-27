@@ -221,7 +221,7 @@ int observe(Observer fn);   // returns a handle; unobserve(handle) removes it
 
 An observer is called **once per cycle, after it completes**, with `data` back-filled. That one
 hook is the entire implementation of `BREAK MEM`, `TRACE` and `HISTORY` — they are questions
-about bus cycles, answered at the bus, so they cost the cores nothing and a future 6809 inherits
+about bus cycles, answered at the bus, so they cost the cores nothing and the 6809 inherited
 them for free. The bus is not *notifying* anyone: the cycle was on the backplane the whole time,
 and an observer is just a probe clipped onto the wires.
 

@@ -158,6 +158,7 @@ std::string fmtNum(unsigned v, int digits, int base) {
 class Isa6800 : public Disassembler {
 public:
     const char* name() const override { return "6800"; }
+    int maxLen() const override { return 3; }
 
     Insn at(uint16_t addr, const PeekFn& peek, int base) const override {
         uint8_t opc = peek(addr);
@@ -425,27 +426,5 @@ const Isa6800Assembler k6800asm;
 
 const Disassembler* mc6800Disassembler() { return &k6800; }
 const Assembler*    mc6800Assembler() { return &k6800asm; }
-
-// The instruction-set registry -- the one map from an isa name to its
-// disassembler/assembler. It lived in isa8080.cpp until the 8080/8085/Z80 world
-// was pruned; with only the 6800 left it answers for "6800" and nulls everything
-// else -- exactly the contract in isa.h. The caller reports a null and never
-// guesses: disassembling one instruction set as another produces plausible,
-// WRONG text, which is worse than an error.
-const Disassembler* disassemblerFor(const std::string& isa) {
-    std::string k;
-    for (char c : isa) k += (char)std::tolower((unsigned char)c);
-    if (k == "6800") return &k6800;
-    return nullptr;
-}
-
-const Assembler* assemblerFor(const std::string& isa) {
-    std::string k;
-    for (char c : isa) k += (char)std::tolower((unsigned char)c);
-    if (k == "6800") return &k6800asm;
-    return nullptr;
-}
-
-std::vector<std::string> instructionSets() { return {"6800"}; }
 
 } // namespace swtpc

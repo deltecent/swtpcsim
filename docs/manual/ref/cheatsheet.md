@@ -56,7 +56,7 @@ Type the part before the bracket.
 | `CONN[ECT]` | Attach a serial unit to an endpoint (console, socket, file, ...). | `CONNECT <id>:<u> <endpoint>` |
 | `CONS[OLE]` | Show or set the host console's properties. | `CONSOLE [<k>=<v>...]` |
 | `DE[POSIT]` | Write bytes into memory at an address. | `DEPOSIT <addr> <bytes...>` |
-| `DI[SASM]` | Disassemble memory into instructions. | `DISASM [<addr>\|<range>] [n] [CPU=6800]` |
+| `DI[SASM]` | Disassemble memory into instructions. | `DISASM [<addr>\|<range>] [n] [CPU=6800\|6809]` |
 | `DISC[ONNECT]` | Unplug the endpoint from a serial unit. | `DISCONNECT <id>:<u>` |
 | `DO` | Run a file of monitor commands, one per line, as if typed. | `DO <file>` |
 | `D[UMP]` | Show memory as hex and ASCII. | `DUMP [<addr>\|<range>] [WIDTH=16]` |
@@ -98,6 +98,7 @@ Type the part before the bracket.
 | Type | What it is |
 |---|---|
 | `6800` | Altair 680b / SWTPC CPU board: a Motorola 6800 |
+| `6809` | CPU board: a Motorola 6809 |
 
 **Memory**
 

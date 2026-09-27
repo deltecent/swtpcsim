@@ -29,6 +29,10 @@ ROM as a list of regions; the SWTPC **MP-S** serial console; the Altair 680b **o
 **Universal I/O** serial/parallel boards; the **KCACR** cassette; and the SWTPC **DC-4** WD179x
 floppy controller.
 
+A Motorola **6809** CPU board (`6809`) as well. No built-in machine uses it yet, but a machine
+file can: `DISASM` and `EDIT` speak 6809, with every indexed mode, and `SHOW BUS IRQ` shows its
+seven vectors.
+
 ### The monitor prompt and the debugger
 
 Drive a running machine from the `swtpcsim>` prompt: fit and configure boards (`BOARDS`,

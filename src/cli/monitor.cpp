@@ -1495,7 +1495,7 @@ void Monitor::showBoards(std::ostream& out, const Machine& m) {
     if (anyConsole) out << "\n  * holds the console\n";
 }
 
-static void reportStop(const RunResult& r, const Debugger& dbg, std::ostream& out);
+static void reportStop(const RunResult& r, const Debugger& dbg, CpuCore* cpu, std::ostream& out);
 
 // ---------------------------------------------------------------------------
 // CONSOLE mode -- the guest owns the keyboard.
@@ -2019,7 +2019,7 @@ void Monitor::runMachine(std::ostream& out, bool stepOver) {
     // and stays silent -- the NEXT handler shows the registers itself. But a REAL
     // stop reached mid-callee is exactly the surprise the operator needs told: a
     // user breakpoint fired, the callee halted, or ATTN/^C took it back. Say those.
-    if (!stepOver || r.why != StopReason::StepTarget) reportStop(r, m_.debug, out);
+    if (!stepOver || r.why != StopReason::StepTarget) reportStop(r, m_.debug, m_.cpu(), out);
 
     // The tally is about WORK DONE, and none of taking the keyboard back, closing
     // the window, or running out of script is a fault worth counting instructions
@@ -2183,7 +2183,13 @@ void Monitor::showBusIrq(std::ostream& out, bool table) {
         masked = !c->interruptsEnabled();
         out << (c->interruptsEnabled()
                     ? "  CPU     I mask CLEAR       a maskable IRQ on the bus will be taken\n"
-                    : "  CPU     I mask SET         IRQ is masked (SEI); NMI and SWI still vector\n");
+                    : "  CPU     I mask SET         IRQ is masked; NMI and SWI still vector\n");
+        // A 6809 has a second mask, F, for its FIRQ pin. Found by name, so a core
+        // without one prints nothing here.
+        for (const RegDef& rd : c->registers())
+            if (rd.name == "F")
+                out << (rd.get() ? "  CPU     F mask SET         FIRQ is masked\n"
+                                 : "  CPU     F mask CLEAR       a FIRQ will be taken\n");
     } else {
         out << "  CPU     (none)             this backplane has no processor\n";
     }
@@ -2202,15 +2208,16 @@ void Monitor::showBusIrq(std::ostream& out, bool table) {
     // survey here -- it is latched inside the CPU when it fires. It is named below for
     // its vector; its live state belongs to the register/step views.
 
-    // The full view (SHOW BUS IRQ) also prints the four vectors as they stand in
-    // memory -- where the processor would actually go for each. Bare SHOW BUS keeps to
-    // the summary above.
+    // The full view (SHOW BUS IRQ) also prints the vectors as they stand in memory --
+    // where the processor would actually go for each. The CORE says which vectors it
+    // has (four on a 6800, seven on a 6809); with no CPU, the four both chips share.
+    // Bare SHOW BUS keeps to the summary above.
     if (table) {
         out << "\n  VECTOR         POINTS AT   (as programmed in memory now)\n";
-        struct V { uint16_t at; const char* name; };
-        static const V vecs[] = {
+        std::vector<VectorDef> vecs = {
             {0xFFF8, "IRQ"}, {0xFFFA, "SWI"}, {0xFFFC, "NMI"}, {0xFFFE, "RESET"},
         };
+        if (CpuCore* c = m_.cpu()) vecs = c->vectors();
         for (const auto& v : vecs) {
             uint16_t tgt = (uint16_t)((m_.bus.peek(v.at) << 8) | m_.bus.peek((uint16_t)(v.at + 1)));
             std::snprintf(buf, sizeof buf, "  %s  %-5s  -> %s", fmtWord(v.at).c_str(), v.name,
@@ -2222,8 +2229,8 @@ void Monitor::showBusIrq(std::ostream& out, bool table) {
     // ---- and the part that earns the command its keep: what is quietly wrong ----
     std::vector<std::string> warn;
     if (!pulling.empty() && masked)
-        warn.push_back("the IRQ line is asserted but the CPU has its I mask set (SEI). Nothing\n"
-                       "  will be taken on IRQ until the guest clears it (CLI).");
+        warn.push_back("the IRQ line is asserted but the CPU has its I mask set. Nothing will\n"
+                       "  be taken on IRQ until the guest clears it.");
 
     if (!warn.empty()) {
         out << "\nWARNINGS\n";
@@ -2415,11 +2422,11 @@ uint8_t Monitor::disasmLine(uint32_t at, const Disassembler& d, std::ostream& ou
         bytes += ' ';
     }
 
-    // Pad the byte column to the widest instruction (three bytes), each byte being
-    // its digits plus a trailing space -- so the mnemonics line up in octal (four
-    // columns a byte) as they always did in hex (three).
-    int w = 3 * (byteWidth() + 1);
-    char buf[96];
+    // Pad the byte column to the widest instruction the ISA has (three bytes on a 6800,
+    // five on a 6809), each byte being its digits plus a trailing space -- so the
+    // mnemonics line up in octal (four columns a byte) as they always did in hex (three).
+    int w = d.maxLen() * (byteWidth() + 1);
+    char buf[128];
     std::snprintf(buf, sizeof buf, "%s  %-*s %s", fmtWord((uint16_t)at).c_str(), w, bytes.c_str(),
                   annotateOperands(in).c_str());
     out << buf << "\n";
@@ -2539,7 +2546,7 @@ std::string Monitor::renderInsn(const Debugger::InsnRec& rec) {
 
 // What stopped it, said out loud. A run that just... comes back, with no reason
 // given, is a debugger you cannot trust.
-static void reportStop(const RunResult& r, const Debugger& dbg, std::ostream& out) {
+static void reportStop(const RunResult& r, const Debugger& dbg, CpuCore* cpu, std::ostream& out) {
     char buf[120];
     switch (r.why) {
     case StopReason::Breakpoint: {
@@ -2552,14 +2559,15 @@ static void reportStop(const RunResult& r, const Debugger& dbg, std::ostream& ou
         break;
     }
     case StopReason::Halted:
-        // On the 6800 the only halt is WAI: it stacks the machine state and waits for an
-        // interrupt (DESIGN.md 6; cpu6800.cpp). The PC is parked just past the WAI. With
-        // I masked, IRQ cannot wake it; NMI always could, but only if a board pulls it --
-        // and on a bench with nothing driving IRQ or NMI, the wait is forever.
+        // A halt is the core waiting for an interrupt: WAI on the 6800, CWAI or SYNC on
+        // the 6809 (DESIGN.md 6). The PC is parked just past it. With I masked, IRQ
+        // cannot wake it; NMI always could, but only if a board pulls it -- and on a
+        // bench with nothing driving IRQ or NMI, the wait is forever. The core names the
+        // instruction, so this line never has to know which chip it is.
         std::snprintf(buf, sizeof buf,
-                      "WAI -- the processor is parked at %s waiting for an interrupt, "
+                      "%s -- the processor is parked at %s waiting for an interrupt, "
                       "and no board is pulling IRQ or NMI.",
-                      fmtWord(r.pc).c_str());
+                      cpu ? cpu->waitingOn() : "WAI", fmtWord(r.pc).c_str());
         out << buf << "\n";
         break;
     case StopReason::Attn:
@@ -4864,7 +4872,7 @@ bool Monitor::exec(const std::string& line, std::ostream& out) {
             total.cycles += r.cycles;
             total.pc = r.pc;
             bool stopped = r.why != StopReason::Steps;
-            if (stopped) reportStop(r, m_.debug, out);
+            if (stopped) reportStop(r, m_.debug, m_.cpu(), out);
             if (echo) showRegs(out);
             if (stopped) break;
         }
@@ -4905,7 +4913,7 @@ bool Monitor::exec(const std::string& line, std::ostream& out) {
             m_.debug.setStepTarget(-1);  // ALWAYS clear -- a real bp/HLT/ATTN may have stopped us first
         } else {
             RunResult r = m_.debug.run(1);
-            if (r.why != StopReason::Steps) reportStop(r, m_.debug, out);
+            if (r.why != StopReason::Steps) reportStop(r, m_.debug, m_.cpu(), out);
         }
         flush(out);
         // Push the resting bus cycle to the panel (see EXAMINE). The JSR/BSR branch

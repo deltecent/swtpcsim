@@ -320,8 +320,11 @@ add_library(swtpc_core STATIC
   src/core/debug.cpp
   src/core/debuglog.cpp
   src/core/spindle.cpp
+  src/isa/isa.cpp
   src/isa/isa6800.cpp
+  src/isa/isa6809.cpp
   src/cpu/cpu6800.cpp
+  src/cpu/cpu6809.cpp
   src/host/stream.cpp
   src/host/filter.cpp
   src/host/console.cpp
@@ -424,6 +427,7 @@ add_library(swtpc_core STATIC
   # The Altair 680b CPU card -- the 88-CPU's twin one core down (mits-680cpu.h),
   # carrying a Cpu6800. Memory-mapped I/O, so it still decodes nothing.
   src/boards/mits-680cpu.cpp
+  src/boards/cpu6809card.cpp
   src/boards/mits-680io.cpp
   # The 680b Universal I/O expansion board -- a second 6850 serial + a 6820 PIA
   # (chips/mc6820.h), memory-mapped and S9-relocatable.
@@ -674,6 +678,7 @@ add_executable(swtpc_tests
   tests/test_clock.cpp
   tests/test_console.cpp
   tests/test_cpu6800.cpp
+  tests/test_cpu6809.cpp
   tests/test_debug.cpp
   tests/test_debuglog.cpp
   tests/test_expr.cpp
@@ -681,6 +686,7 @@ add_executable(swtpc_tests
   tests/test_hostdir.cpp
   tests/test_imd.cpp
   tests/test_isa6800.cpp
+  tests/test_isa6809.cpp
   tests/test_lineedit.cpp
   tests/test_lines.cpp
   tests/test_machines.cpp

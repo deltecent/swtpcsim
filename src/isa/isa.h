@@ -29,8 +29,8 @@
 
 namespace swtpc {
 
-// One decoded instruction. `len` is 1..3 for the 8080; a caller stepping through
-// memory adds it to the address and asks again.
+// One decoded instruction. `len` is 1..3 for the 6800 and 1..5 for the 6809; a caller
+// stepping through memory adds it to the address and asks again.
 struct Insn {
     std::string text;      // "LXI H,FF13"  (operands in the requested base)
     uint8_t len = 1;
@@ -55,6 +55,10 @@ class Disassembler {
 public:
     virtual ~Disassembler() = default;
     virtual const char* name() const = 0;   // "8080" -- the registry key
+    // The longest instruction, in bytes: 3 on a 6800, 5 on a 6809 (a page-2 prefix,
+    // the opcode, an indexed post-byte and a 16-bit offset). DISASM pads its byte
+    // column to this so the mnemonics line up.
+    virtual int maxLen() const = 0;
     // `base` is how operands are spelled in the returned text: 16 (hex, the
     // default, and what every non-monitor caller wants) or 8 (split octal, when
     // the monitor's operator has SET CONSOLE base=octal). It changes only the

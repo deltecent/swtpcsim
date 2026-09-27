@@ -28,6 +28,7 @@ Grouped by what they do — the same order as the sections below.
 | Type | What it is |
 |---|---|
 | `6800` | a Motorola 6800 — the CPU of the SWTPC 6800 and the MITS Altair 680b |
+| `6809` | a Motorola 6809 — a processor board for a machine that you build |
 
 **Serial ports and consoles**
 
@@ -99,6 +100,20 @@ It is the processor of two machines here: the **SWTPC 6800** (`swtpc`) and the *
 Every CPU board carries the same three properties: **`clock_hz`** (the crystal), **`idle`**
 (stands the processor down at a prompt), and the read-only **`achieved_hz`** (the speed it
 actually reached).
+
+## `6809` — a Motorola 6809
+
+The `6809` board is a Motorola MC6809 processor and its crystal. It has the same three
+properties as the `6800` board. No built-in machine uses it yet. Add it to a machine file, or
+type `BOARDS ADD 6809 cpu0`.
+
+The 6809 has seven vectors at the top of memory: SWI3 at `FFF2`, SWI2 at `FFF4`, FIRQ at
+`FFF6`, IRQ at `FFF8`, SWI at `FFFA`, NMI at `FFFC` and RESET at `FFFE`. `SHOW BUS IRQ` shows
+all seven. The board takes IRQ from the bus. Its FIRQ input is not connected.
+
+`DISASM` and `EDIT` use the 6809 instruction set when this board is the processor. On a 6809,
+`<nn` is a direct address and `>nnnn` is an extended address. `REGS` shows `A`, `B`, `X`, `Y`,
+`U`, `S`, `DP`, `PC` and the flags `E F H I N Z V C`. `D` is reachable by name.
 
 ### The crystal is on the board — `clock_hz`
 
