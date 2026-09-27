@@ -221,12 +221,12 @@ DC4: ambiguous -- dc40 dc41. Name the one you mean.
 
 ## SHOW BUS IRQ is the only window onto the interrupt wiring
 
-`SHOW BUS` has four views: `MAP` (memory), `IO` (ports), `CONTENTION` (who collides), and `IRQ`. The first three describe things you could find out another way — a wrong decode collides, or reads `FF`, and either way *something happens*. **The interrupt wiring is different: it is one shared wire and four vectors, none of them addressable, and getting it wrong fails in total silence.**
+`SHOW BUS` has four views: `MAP` (memory), `IO` (ports), `CONTENTION` (who collides), and `IRQ`. The first three describe things you could find out another way — a wrong decode collides, or reads `FF`, and either way *something happens*. **The interrupt wiring is different: it is one shared wire and a handful of vectors (four on a 6800, seven on a 6809), none of them addressable, and getting it wrong fails in total silence.**
 
 ```
 swtpcsim> SHOW BUS IRQ
 INTERRUPTS
-  CPU     I mask SET         IRQ is masked (SEI); NMI and SWI still vector
+  CPU     I mask SET         IRQ is masked; NMI and SWI still vector
   IRQ     idle               the shared maskable wire (FFF8)
 
   VECTOR         POINTS AT   (as programmed in memory now)

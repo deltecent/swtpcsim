@@ -79,6 +79,14 @@ struct RegDef {
     const std::string& shown() const { return label.empty() ? name : label; }
 };
 
+// One of the fixed vectors at the top of memory, as the CORE knows them. SHOW BUS IRQ
+// and the MCP bus_irq tool print the list; they do not know how many a chip has or
+// where it keeps them. The 6800 has four; the 6809 adds FIRQ, SWI2 and SWI3.
+struct VectorDef {
+    uint16_t at;
+    const char* name;  // "IRQ", "FIRQ", "SWI2"
+};
+
 class CpuCore {
 public:
     virtual ~CpuCore() = default;
@@ -125,6 +133,14 @@ public:
 
     virtual bool halted() const = 0;
     virtual bool interruptsEnabled() const = 0;
+
+    // The instruction that is holding the core in halted(): "WAI" on a 6800, "CWAI"
+    // or "SYNC" on a 6809. The monitor names it when a run stops on a halt nothing
+    // can wake. Only asked when halted() is true.
+    virtual const char* waitingOn() const = 0;
+
+    // The fixed vectors, lowest address first -- what SHOW BUS IRQ prints.
+    virtual std::vector<VectorDef> vectors() const = 0;
 
     // SNAPSHOT/RESTORE (DESIGN.md 13). Every architectural register AND the hidden
     // micro-state that registers() does not expose -- the EI-after-next latch, the

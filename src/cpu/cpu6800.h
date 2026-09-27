@@ -58,6 +58,11 @@ public:
     // The I flag is the interrupt MASK: set means masked. "Enabled" is its inverse.
     bool interruptsEnabled() const override { return !if_; }
 
+    const char* waitingOn() const override { return "WAI"; }
+    std::vector<VectorDef> vectors() const override {
+        return {{0xFFF8, "IRQ"}, {0xFFFA, "SWI"}, {0xFFFC, "NMI"}, {0xFFFE, "RESET"}};
+    }
+
     // NMI is a dedicated edge-triggered pin, not the shared IRQ wire the bus carries.
     // The board that owns this core pulses it; the core latches the edge and takes it
     // at the next instruction boundary, regardless of the I mask.

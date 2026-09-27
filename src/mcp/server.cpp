@@ -1650,13 +1650,15 @@ Json callTool(Machine& m, McpSession& sess, const std::string& name, const Json&
         for (const auto& id : irqboards.items()) text += " " + id.str();
         text += "\n";
 
-        // The four 6800 vectors as they stand in memory -- read with peek(), so no bus
-        // cycle runs and no observer sees this. IRQ is a wire (above); NMI is an edge on
-        // a dedicated pin and RESET is power-on -- neither is a bus line to survey.
-        struct V { uint16_t at; const char* name; };
-        static const V vecs[] = {
+        // The CPU's vectors as they stand in memory -- read with peek(), so no bus
+        // cycle runs and no observer sees this. The core lists them (four on a 6800,
+        // seven on a 6809); with no CPU, the four both chips share. IRQ is a wire
+        // (above); NMI is an edge on a dedicated pin and RESET is power-on -- neither
+        // is a bus line to survey.
+        std::vector<VectorDef> vecs = {
             {0xFFF8, "IRQ"}, {0xFFFA, "SWI"}, {0xFFFC, "NMI"}, {0xFFFE, "RESET"},
         };
+        if (CpuCore* c = m.cpu()) vecs = c->vectors();
         Json vectors = Json::arr();
         for (const auto& v : vecs) {
             uint16_t tgt = (uint16_t)((m.bus.peek(v.at) << 8) | m.bus.peek((uint16_t)(v.at + 1)));

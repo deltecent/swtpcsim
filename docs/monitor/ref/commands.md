@@ -223,7 +223,9 @@ assembled in place -- the prompt then drops by the instruction's length, not one
 byte. Operands are numbers in the console base (an H or Q suffix overrides); a
 bare value is still a plain byte. The 6800 assembles in full -- immediate,
 direct, indexed and extended addressing, and the branches as a target the
-assembler turns into a signed offset.
+assembler turns into a signed offset. The 6809 does too, and adds every indexed
+form (n,X  [n,X]  ,X++  A,X  n,PCR  [nnnn]), TFR/EXG pairs and PSH/PUL lists.
+On a 6809, <nn is direct and >nnnn is extended.
 Look at a few bytes, patch two instructions in, and read them back:
 
 ```
@@ -361,9 +363,10 @@ The flags are registers too, so SET REG C=1 works. A register value is on
 the wire, so it is HEX.
 
 What it shows is the ACTIVE CPU's own set: the 6800 prints A, B, X, SP, PC and
-its flags H I N Z V C on one line. CC, the whole condition-code byte, is reachable
-by name though it is off the line. SET REG takes any name REGS knows -- and only
-those. BREAK ... IF reads the very same names.
+its flags H I N Z V C on one line. The 6809 prints A, B, X, Y, U, S, DP, PC and
+E F H I N Z V C. Its D (A:B) is reachable by name. CC, the whole condition-code
+byte, is reachable by name though it is off the line. SET REG takes any name
+REGS knows -- and only those. BREAK ... IF reads the very same names.
 
 ```
 REGS
@@ -450,8 +453,9 @@ so it sees the byte the read just delivered. IF gates on the inputs; LOADS on
 the value read.
 
 The names are the ACTIVE CPU's own -- exactly the set REGS shows, every register
-and flag in it. On a 6800 that is A, B, X, SP, PC and the flags H I N Z V C. A
-name the running CPU does not have is an error.
+and flag in it. On a 6800 that is A, B, X, SP, PC and the flags H I N Z V C. On
+a 6809 it is A, B, D, X, Y, U, S, DP, PC and the flags E F H I N Z V C. A name
+the running CPU does not have is an error.
 
 ```
 BREAK 100 IF A==0
@@ -486,7 +490,7 @@ unconfigured tracepoint traces to the console.
 ### DISASM — `DI[SASM]`
 
 ```
-DISASM [<addr>|<range>] [n] [CPU=6800]
+DISASM [<addr>|<range>] [n] [CPU=6800|6809]
 ```
 It needs an INSTRUCTION SET, not a CPU -- so it works on an empty backplane.
 You normally never type CPU=: the active core says what it speaks, and DISASM
@@ -494,7 +498,7 @@ asks it. It PEEKS, so it cannot consume a byte from a UART in the range.
 
 n is how many INSTRUCTIONS to decode -- a count, so it is decimal, and 16 when
 you leave it off. It only applies to a start address: give a RANGE and the range
-decides where to stop. CPU= names an instruction set -- 6800 -- and is only for
+decides where to stop. CPU= names an instruction set, 6800 or 6809. Use it only
 when the machine has no CPU to ask.
 
 ```
