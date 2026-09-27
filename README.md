@@ -48,7 +48,7 @@ anything. `-DSWTPCSIM_ENABLE_SDL=OFF` forces headless even where SDL3 is present
 git clone https://github.com/deltecent/swtpcsim.git
 cd swtpcsim
 cmake -S . -B build && cmake --build build -j
-ctest --test-dir build -LE slow      # drop -LE slow for the full CPU exercisers
+ctest --test-dir build               # unit + acceptance
 ./build/swtpcsim swtpc               # a SWTPC 6800, SWTBUG in ROM
 ```
 
@@ -222,8 +222,7 @@ reason to believe any of them.
 ## Tests
 
 ```sh
-ctest --test-dir build -LE slow     # unit + acceptance
-ctest --test-dir build              # ...plus the full CPU exercisers
+ctest --test-dir build              # unit + acceptance
 ```
 
 The acceptance tests are not unit tests: they boot period software on the whole machine through

@@ -49,7 +49,7 @@ on:
 # GENERATED from the binary: docs/manual/ref/*.md and docs/monitor/ref/commands.md are
 # committed, and the docs-reference test byte-diffs them against what the binary emits. So a
 # src/ change that moves the reference
-# either moves docs/ too, or CI is already red. (Precedent: cpu-exerciser.yml.)
+# either moves docs/ too, or CI is already red.
 
 permissions:
   contents: write

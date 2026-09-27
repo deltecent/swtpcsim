@@ -218,7 +218,7 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release \
 cmake --build build --config Release --parallel   # NOT --parallel on the VMs (see above)
 
 # 4. Prove the machine before it packages anything.
-ctest --test-dir build -C Release -LE slow
+ctest --test-dir build -C Release
 #    CHECK: "100% tests passed"
 #    STOP on any failure. Do not package a red tree.
 
@@ -375,7 +375,7 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release \
       -DCMAKE_PREFIX_PATH="$HOME/opt/sdl3-static" \
       -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
 cmake --build build --config Release --parallel
-ctest --test-dir build -C Release -LE slow            # CHECK: 100% tests passed
+ctest --test-dir build -C Release            # CHECK: 100% tests passed
 ./build/swtpcsim --version                           # CHECK: bare "swtpcsim X.Y.Z"
 tools/build-package.sh --pdf docs/swtpcsim-manual.pdf --target macos-arm64
 tools/verify-package.sh dist/swtpcsim-X.Y.Z-macos-arm64.tar.gz   # CHECK: verify-package: PASS
@@ -398,7 +398,7 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release \
       -DCMAKE_PREFIX_PATH="$HOME/opt/sdl3-static" \
       -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
 cmake --build build --config Release --parallel
-ctest --test-dir build -C Release -LE slow
+ctest --test-dir build -C Release
 ./build/swtpcsim --version
 tools/build-package.sh --pdf docs/swtpcsim-manual.pdf --target macos-x86_64
 tools/verify-package.sh dist/swtpcsim-X.Y.Z-macos-x86_64.tar.gz   # CHECK: verify-package: PASS
@@ -441,7 +441,7 @@ cmake -B build -DCMAKE_BUILD_TYPE=Release `
       -DCMAKE_PREFIX_PATH="$env:USERPROFILE\opt\sdl3-static" `
       -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
 cmake --build build --config Release          # single-threaded: RAM-starved VM, no --parallel (§4.2)
-ctest --test-dir build -C Release -LE slow
+ctest --test-dir build -C Release
 .\build\Release\swtpcsim.exe --version
 ```
 ```sh
@@ -459,7 +459,7 @@ git clone https://github.com/deltecent/swtpcsim.git   # first time only; no logi
 git fetch --tags --force && git checkout -f vX.Y.Z
 cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$HOME/opt/sdl3-static"
 cmake --build build --config Release          # single-threaded: RAM-starved VM, no --parallel (§4.2)
-ctest --test-dir build -C Release -LE slow
+ctest --test-dir build -C Release
 ./build/swtpcsim --version
 tools/build-package.sh --pdf docs/swtpcsim-manual.pdf --target linux-x86_64
 tools/verify-package.sh dist/swtpcsim-X.Y.Z-linux-x86_64.tar.gz   # CHECK: verify-package: PASS
@@ -492,7 +492,7 @@ scp dist/swtpcsim-X.Y.Z-linux-x86_64.tar.gz patrick@dist.swtpcsim.com:~/src/swtp
 
 ## 5. The release sequence
 
-Steps 1–4 and 6 are the coordinator's. Step 5 is the four build machines — the three workers `scp` their archives to the coordinator, which alone talks to GitHub. **Steps 1–4 are pre-build prep and may be done ahead of build day** — bump, changelog, wait for CI's PDFs, tag, wait for `cpu-exerciser-release.yml`, open the draft — leaving only steps 5–6 (build, then checksum/publish) for when the machines are lined up.
+Steps 1–4 and 6 are the coordinator's. Step 5 is the four build machines — the three workers `scp` their archives to the coordinator, which alone talks to GitHub. **Steps 1–4 are pre-build prep and may be done ahead of build day** — bump, changelog, wait for CI's PDFs, tag, open the draft — leaving only steps 5–6 (build, then checksum/publish) for when the machines are lined up.
 
 **1. Bump the version, and write the changelog section.** `project(swtpcsim VERSION X.Y.Z …)` in `CMakeLists.txt` is the only place the number lives; everything else derives from it or from `git describe`. In the same commit, add the release's section to `docs/changelog/changelog.md`.
 
@@ -500,7 +500,7 @@ Steps 1–4 and 6 are the coordinator's. Step 5 is the four build machines — t
 
 **2. Merge, then wait for the PDFs.** `docs.yml` rebuilds every document on master — the manual, the **changelog** (`docs/changelog/`), the quick reference, the **monitor** and **debugger** documents (`docs/monitor/`, `docs/debugger/`), and the developer guide — and commits the ones that changed as *"Rebuild the PDFs for `<sha>`"*. **Tag that commit**, not the merge — otherwise the tagged tree carries a stale manual, or a shipped document missing altogether. The manual is handed to `build-package.sh` with `--pdf`; the changelog, the monitor and the debugger need no flag — the script copies `docs/swtpcsim-changelog.pdf`, `docs/swtpcsim-monitor.pdf` and `docs/swtpcsim-debugger.pdf` straight from the tagged tree (each is a committed artifact, same as the manual, and none may go through the token-substitution loop).
 
-**3. Tag and push.** This fires `cpu-exerciser-release.yml`: 8080EXM, ZEXDOC and ZEXALL on all three CI platforms, roughly 15 billion instructions each. **Wait for it to go green before publishing anything.**
+**3. Tag and push.** Tag the PDF commit from step 2 and push the tag.
 
 **4. Open the draft.** `gh release create vX.Y.Z --draft --notes-file <notes>`. The collection point has to exist before any machine starts building.
 
