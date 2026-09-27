@@ -70,8 +70,7 @@ the full sweep:
 ```sh
 ./build/swtpc_tests <names>        # e.g. ./build/swtpc_tests pmmi modemline lines
 ./build/swtpc_tests --list         # list the suite names
-ctest --test-dir build -LE slow     # full local run, minus the slow CPU gate
-ctest --test-dir build              # full run including the slow CPU gate
+ctest --test-dir build              # full local run
 ```
 
 Read the pass line — `100% tests passed out of N` — not merely the

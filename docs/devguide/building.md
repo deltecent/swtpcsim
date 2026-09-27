@@ -8,7 +8,7 @@ nothing to download.
 git clone https://github.com/deltecent/swtpcsim.git
 cd swtpcsim
 cmake -S . -B build && cmake --build build -j
-ctest --test-dir build -LE slow      # the test suite
+ctest --test-dir build               # the test suite
 ./build/swtpcsim                    # the default machine
 ```
 
@@ -23,9 +23,8 @@ If CMake is unfamiliar, the two `cmake` calls are two distinct steps — **confi
 - **`cmake --build build -j`** — *build.* Compiles what the configure step laid out under
   `build/`. `-j` runs the compiles in parallel across all CPU cores (drop it for a serial
   build, or `-j4` to cap the jobs). This is the command you repeat after editing code.
-- **`ctest --test-dir build -LE slow`** — run the tests that the build produced. `--test-dir
-  build` points at the same directory; `-LE` is *label-exclude*, so `-LE slow` runs everything
-  **except** any test tagged `slow`.
+- **`ctest --test-dir build`** — run the tests that the build produced. `--test-dir build`
+  points at the same directory.
 
 Everything lands in `build/`, which is disposable: `rm -rf build` and rerun the configure step
 for a clean slate.
@@ -146,7 +145,7 @@ this tree.
 ## The tests
 
 ```sh
-ctest --test-dir build -LE slow     # unit + acceptance. About 30 seconds.
+ctest --test-dir build              # unit + acceptance. About 15 seconds.
 ctest --test-dir build -L hw        # socket-hw + terminal-hw, against the real world.
 ```
 

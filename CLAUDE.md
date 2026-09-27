@@ -89,18 +89,17 @@ needs no environment at all.
 ./build/swtpc_tests <names>         # local loop: the suites for the subsystem you touched
                                     #   e.g. ./build/swtpc_tests mps dc4 cpu6800
                                     #   ./build/swtpc_tests --list  to see the names
-ctest --test-dir build -LE slow     # optional full local run  (15 tests, ~15 seconds)
-ctest --test-dir build              # optional; adds any `slow` test (none registered today)
+ctest --test-dir build              # optional full local run  (15 tests, ~15 seconds)
 ```
 
 **Local cadence: run the unit suites for what you changed, then commit — CI runs the full
 suite.** `swtpc_tests <names>` runs only the named suites (no args = the full suite,
 exactly as `ctest` invokes it); a mistyped name is a hard error, not an empty pass. There is
-no required full local run before a commit: CI runs `-LE slow` on three platforms on every
+no required full local run before a commit: CI runs the full suite on three platforms on every
 push and is the backstop. Selection rests on *your* judgment of what a change touches, so
 the impacted-test list can be wrong — that is what CI catches. Run the full local `ctest`
 yourself when you want the answer before pushing (a wide or cross-cutting change), or for
-release-ish work where the slow CPU gate matters.
+release-ish work.
 
 **Match the pass line, not the absence of errors** — read `100% tests passed out of N`. A
 `cd` that leaves the build directory can make `ctest` not run at all, which looks identical

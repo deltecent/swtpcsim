@@ -7,7 +7,7 @@ passed 13/13. The simulator starts, lists its built-in machines, and runs monito
 commands.
 
 > **The counts below are a dated record, not a running total.** The suite has grown
-> since — `ctest -LE slow` registers 26 tests today — and CI now builds and tests
+> since — `ctest` registers 15 tests today — and CI now builds and tests
 > Linux on every push, which is the live answer. What this document is for is the
 > from-scratch procedure and the platform notes, and those have not changed.
 
@@ -194,14 +194,12 @@ libstdc++, and `-x "help" swtpc` confirms a machine actually initializes.
 The tests run through `ctest` against the `build/` directory:
 
 ```bash
-ctest --test-dir build -LE slow     # the everyday run: unit + acceptance
+ctest --test-dir build              # the everyday run: unit + acceptance
 ctest --test-dir build -L hw        # the real-world leg: socket-hw + terminal-hw
 ```
 
-`-LE slow` is the everyday run — it excludes any test carrying the `slow` label
-(there are none in the tree today; the flag is kept because CLAUDE.md and CI use
-it and a long CPU gate can return later). Match the pass line —
-`100% tests passed` — not merely the absence of the word "error".
+Match the pass line — `100% tests passed` — not merely the absence of the word
+"error".
 
 The `-L hw` leg is opt-in and touches the real world rather than a scripted
 stream. Two tests carry the `hw` label:

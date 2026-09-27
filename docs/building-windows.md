@@ -205,7 +205,7 @@ swtpc` confirms a machine actually initializes.
 ## 4. Running the tests
 
 ```powershell
-ctest --test-dir build -C Release -LE slow --output-on-failure
+ctest --test-dir build -C Release --output-on-failure
 ```
 
 - **`expect` is not on Windows**, so the interactive acceptance tests
@@ -263,7 +263,7 @@ aggregate with `0xC0000409`, §6 shows how to isolate it.
   .\build\Release\swtpc_terminaltest.exe    # 15 checks, 0 failed, exit 0
   ```
 
-  So on a routine `ctest --test-dir build -C Release -LE slow`, expect `terminal-hw`
+  So on a routine `ctest --test-dir build -C Release`, expect `terminal-hw`
   reported failed; confirm the layer with the direct run above. Making the test *skip*
   when stdout alone is redirected is an open task.
 
@@ -418,7 +418,7 @@ For **each** of A, B and C, capture four things. Partial results are worth repor
 2. Whether configure printed **`-- SDL3 found -- video boards enabled (windowed)`** or the
    `not found` line. Quote it.
 3. The **first** error in full, if it failed. Not a summary — the actual text.
-4. `build\...\swtpcsim.exe --version` output, and `ctest --test-dir build -C Release -LE slow`
+4. `build\...\swtpcsim.exe --version` output, and `ctest --test-dir build -C Release`
    pass line, if you got that far.
 
 Fill this in, replacing every `?`:
